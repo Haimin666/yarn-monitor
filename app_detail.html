@@ -306,7 +306,8 @@ function showIframe(url) {
   document.getElementById('detail-card').classList.add('hidden');
   var frame = document.getElementById('main-frame');
   frame.style.display = 'block';
-  frame.src = url;
+  // 通过 server.py 代理，避免浏览器直连集群内网节点
+  frame.src = '/proxy?url=' + encodeURIComponent(url);
 }
 
 function hideIframe() {

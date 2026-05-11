@@ -186,6 +186,32 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json(200, {"app_id": app_id, "log_url": log_url, "rm_base": RM_BASE})
 
+        elif path == "/proxy":
+            target = qs.get("url", [None])[0]
+            if not target:
+                self.send_json(400, {"error": "缺少 url 参数"})
+                return
+            # 安全：只允许代理集群内网地址（RM_HOST 或 hadoop- 开头的节点）
+            from urllib.parse import urlparse as _up
+            _parsed = _up(target)
+            _host = _parsed.hostname or ""
+            if not (_host == RM_HOST or _host.startswith("hadoop-")):
+                self.send_json(403, {"error": f"不允许代理到 {_host}"})
+                return
+            try:
+                req = Request(target, headers={"Accept": "text/html,*/*", "User-Agent": "YARNProxy/1.0"})
+                with urlopen(req, timeout=20) as resp:
+                    ct = resp.headers.get("Content-Type", "text/html; charset=utf-8")
+                    body = resp.read()
+                self.send_response(200)
+                self.send_header("Content-Type", ct)
+                self.send_header("Content-Length", len(body))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(body)
+            except Exception as e:
+                self.send_json(502, {"error": f"代理请求失败: {e}"})
+
         elif path == "/app":
             self.serve_file(os.path.join(ROOT, "app_detail.html"))
 
