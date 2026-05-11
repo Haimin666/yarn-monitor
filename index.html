@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>YARN 集群监控</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, sans-serif; display: flex; height: 100vh; overflow: hidden; background: #1a1a2e; }
+
+  /* 左侧面板 */
+  #sidebar {
+    width: 220px;
+    min-width: 180px;
+    background: #16213e;
+    color: #ccc;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid #0f3460;
+  }
+  #sidebar-header {
+    padding: 16px 12px 12px;
+    border-bottom: 1px solid #0f3460;
+  }
+  #sidebar-header h1 { font-size: 14px; color: #e0e0e0; line-height: 1.4; }
+  #sidebar-header p { font-size: 11px; color: #666; margin-top: 4px; }
+  #search {
+    margin: 10px 10px 6px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    border: 1px solid #0f3460;
+    background: #0f1924;
+    color: #ccc;
+    font-size: 12px;
+    width: calc(100% - 20px);
+    outline: none;
+  }
+  #snapshot-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 0;
+  }
+  .snap-item {
+    padding: 9px 14px;
+    cursor: pointer;
+    font-size: 12px;
+    color: #aaa;
+    border-left: 3px solid transparent;
+    transition: all 0.15s;
+    line-height: 1.4;
+  }
+  .snap-item:hover { background: #0f3460; color: #fff; }
+  .snap-item.active { background: #0f3460; color: #4fc3f7; border-left-color: #4fc3f7; font-weight: bold; }
+  .snap-date { font-size: 11px; color: #666; }
+  .snap-item.active .snap-date { color: #4fc3f7; }
+
+  #sidebar-footer {
+    padding: 10px 12px;
+    border-top: 1px solid #0f3460;
+    font-size: 11px;
+    color: #555;
+  }
+
+  /* 右侧 iframe */
+  #main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+  }
+  #toolbar {
+    background: #0f1924;
+    padding: 8px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    border-bottom: 1px solid #0f3460;
+    font-size: 12px;
+    color: #888;
+    flex-shrink: 0;
+  }
+  #current-label { color: #4fc3f7; font-weight: bold; flex: 1; }
+  .btn {
+    padding: 4px 12px;
+    border-radius: 4px;
+    border: 1px solid #0f3460;
+    background: #16213e;
+    color: #aaa;
+    cursor: pointer;
+    font-size: 12px;
+    text-decoration: none;
+  }
+  .btn:hover { background: #0f3460; color: #fff; }
+  #content-frame {
+    flex: 1;
+    border: none;
+    width: 100%;
+    background: white;
+  }
+  #empty-state {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: #555;
+    gap: 12px;
+  }
+  #empty-state h2 { font-size: 18px; color: #777; }
+  #empty-state p { font-size: 13px; }
+  #empty-state code { background: #0f1924; padding: 8px 16px; border-radius: 6px; font-size: 12px; color: #4fc3f7; display: block; margin-top: 4px; }
+
+  /* 滚动条 */
+  #snapshot-list::-webkit-scrollbar { width: 4px; }
+  #snapshot-list::-webkit-scrollbar-track { background: transparent; }
+  #snapshot-list::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <div id="sidebar-header">
+    <h1>🐘 YARN 监控</h1>
+    <p id="snap-count">加载中...</p>
+  </div>
+  <input id="search" type="text" placeholder="搜索快照..." oninput="filterList()">
+  <div id="snapshot-list"></div>
+  <div id="sidebar-footer">
+    快照每小时自动更新<br>
+    保留最近 30 天记录
+  </div>
+</div>
+
+<div id="main">
+  <div id="toolbar">
+    <span id="current-label">请选择一个快照</span>
+    <a id="open-btn" class="btn" href="#" target="_blank" style="display:none">↗ 新窗口打开</a>
+    <button class="btn" onclick="loadLatest()">最新快照</button>
+  </div>
+  <iframe id="content-frame" style="display:none"></iframe>
+  <div id="empty-state">
+    <h2>📊 YARN 集群监控</h2>
+    <p>左侧选择快照查看，或点击「最新快照」</p>
+    <p style="margin-top: 16px; color:#444">如果没有数据，请先运行：</p>
+    <code>python3 yarn_scan.py</code>
+    <p style="margin-top: 8px; color:#444">配置 crontab 自动采集：</p>
+    <code>0 * * * * cd /path/to/yarn-monitor && python3 yarn_scan.py >> scan.log 2>&1</code>
+  </div>
+</div>
+
+<script>
+let allSnapshots = [];
+let currentSnap = null;
+
+async function loadSnapshots() {
+  try {
+    const r = await fetch('snapshots.json?t=' + Date.now());
+    if (!r.ok) throw new Error('not found');
+    allSnapshots = await r.json();
+  } catch (e) {
+    allSnapshots = [];
+  }
+  renderList(allSnapshots);
+  document.getElementById('snap-count').textContent =
+    allSnapshots.length > 0
+      ? `共 ${allSnapshots.length} 个快照`
+      : '暂无快照';
+
+  if (allSnapshots.length > 0) {
+    selectSnap(allSnapshots[0]);
+  }
+}
+
+function renderList(snaps) {
+  const list = document.getElementById('snapshot-list');
+  list.innerHTML = '';
+  if (snaps.length === 0) {
+    list.innerHTML = '<div style="padding:20px;text-align:center;color:#555;font-size:12px">暂无快照</div>';
+    return;
+  }
+  snaps.forEach(name => {
+    const div = document.createElement('div');
+    div.className = 'snap-item' + (name === currentSnap ? ' active' : '');
+    div.dataset.name = name;
+
+    // 解析文件名 2026-05-11_10-00.html
+    const m = name.match(/(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2})/);
+    if (m) {
+      const date = m[1];
+      const time = m[2].replace('-', ':');
+      div.innerHTML = `<div>${time}</div><div class="snap-date">${date}</div>`;
+    } else {
+      div.textContent = name.replace('.html', '');
+    }
+
+    div.onclick = () => selectSnap(name);
+    list.appendChild(div);
+  });
+}
+
+function filterList() {
+  const q = document.getElementById('search').value.toLowerCase();
+  const filtered = q ? allSnapshots.filter(s => s.includes(q)) : allSnapshots;
+  renderList(filtered);
+}
+
+function selectSnap(name) {
+  currentSnap = name;
+  const url = 'snapshots/' + name;
+
+  // 更新列表高亮
+  document.querySelectorAll('.snap-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.name === name);
+  });
+
+  // 更新 iframe
+  const frame = document.getElementById('content-frame');
+  const empty = document.getElementById('empty-state');
+  frame.src = url;
+  frame.style.display = 'block';
+  empty.style.display = 'none';
+
+  // 更新 toolbar
+  const label = name.replace('.html', '').replace('_', ' ').replace(/-(\d{2})-(\d{2})$/, ' $1:$2');
+  document.getElementById('current-label').textContent = '📅 ' + label;
+
+  const openBtn = document.getElementById('open-btn');
+  openBtn.href = url;
+  openBtn.style.display = 'inline-block';
+}
+
+function loadLatest() {
+  if (allSnapshots.length > 0) {
+    selectSnap(allSnapshots[0]);
+  } else {
+    alert('暂无快照，请先运行 yarn_scan.py');
+  }
+}
+
+// 每5分钟自动刷新快照列表
+loadSnapshots();
+setInterval(loadSnapshots, 5 * 60 * 1000);
+</script>
+</body>
+</html>

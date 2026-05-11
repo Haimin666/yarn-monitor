@@ -1,0 +1,6 @@
+*.log
+__pycache__/
+*.pyc
+# 快照文件不提交到 git（太多），只提交代码
+# 如果你想用 git 保留历史快照，注释掉下面这行
+snapshots/*.html
