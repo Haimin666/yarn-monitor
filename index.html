@@ -10,8 +10,8 @@
 
   /* 左侧面板 */
   #sidebar {
-    width: 220px;
-    min-width: 180px;
+    width: 230px;
+    min-width: 190px;
     background: #16213e;
     color: #ccc;
     display: flex;
@@ -19,13 +19,36 @@
     border-right: 1px solid #0f3460;
   }
   #sidebar-header {
-    padding: 16px 12px 12px;
+    padding: 14px 12px 10px;
     border-bottom: 1px solid #0f3460;
   }
   #sidebar-header h1 { font-size: 14px; color: #e0e0e0; line-height: 1.4; }
   #sidebar-header p { font-size: 11px; color: #666; margin-top: 4px; }
+
+  #scan-btn {
+    margin: 8px 10px 0;
+    padding: 7px 0;
+    width: calc(100% - 20px);
+    border-radius: 6px;
+    border: none;
+    background: #4fc3f7;
+    color: #000;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: bold;
+    transition: background 0.15s;
+  }
+  #scan-btn:hover { background: #81d4fa; }
+  #scan-btn:disabled { background: #2a4a6a; color: #555; cursor: not-allowed; }
+  #scan-status {
+    margin: 4px 10px 0;
+    font-size: 10px;
+    color: #4fc3f7;
+    height: 14px;
+  }
+
   #search {
-    margin: 10px 10px 6px;
+    margin: 8px 10px 6px;
     padding: 6px 10px;
     border-radius: 6px;
     border: 1px solid #0f3460;
@@ -61,7 +84,7 @@
     color: #555;
   }
 
-  /* 右侧 iframe */
+  /* 右侧主区域 */
   #main {
     flex: 1;
     display: flex;
@@ -109,23 +132,29 @@
   #empty-state p { font-size: 13px; }
   #empty-state code { background: #0f1924; padding: 8px 16px; border-radius: 6px; font-size: 12px; color: #4fc3f7; display: block; margin-top: 4px; }
 
-  /* 滚动条 */
   #snapshot-list::-webkit-scrollbar { width: 4px; }
   #snapshot-list::-webkit-scrollbar-track { background: transparent; }
   #snapshot-list::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 2px; }
+
+  .spinning { display: inline-block; animation: spin 1s linear infinite; }
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 </style>
 </head>
 <body>
 
 <div id="sidebar">
   <div id="sidebar-header">
-    <h1>🐘 YARN 监控</h1>
+    <h1>🐘 YARN 集群监控</h1>
     <p id="snap-count">加载中...</p>
   </div>
+
+  <button id="scan-btn" onclick="triggerScan()">⚡ 立即采集</button>
+  <div id="scan-status"></div>
+
   <input id="search" type="text" placeholder="搜索快照..." oninput="filterList()">
   <div id="snapshot-list"></div>
   <div id="sidebar-footer">
-    快照每小时自动更新<br>
+    快照由 yarn_scan.py 生成<br>
     保留最近 30 天记录
   </div>
 </div>
@@ -139,35 +168,93 @@
   <iframe id="content-frame" style="display:none"></iframe>
   <div id="empty-state">
     <h2>📊 YARN 集群监控</h2>
-    <p>左侧选择快照查看，或点击「最新快照」</p>
-    <p style="margin-top: 16px; color:#444">如果没有数据，请先运行：</p>
-    <code>python3 yarn_scan.py</code>
-    <p style="margin-top: 8px; color:#444">配置 crontab 自动采集：</p>
-    <code>0 * * * * cd /path/to/yarn-monitor && python3 yarn_scan.py >> scan.log 2>&1</code>
+    <p>点击左上角「⚡ 立即采集」或左侧选择历史快照</p>
+    <p style="margin-top: 16px; color:#444">启动服务：</p>
+    <code>python3 server.py</code>
   </div>
 </div>
 
 <script>
 let allSnapshots = [];
 let currentSnap = null;
+let pollTimer = null;
 
 async function loadSnapshots() {
   try {
-    const r = await fetch('snapshots.json?t=' + Date.now());
-    if (!r.ok) throw new Error('not found');
-    allSnapshots = await r.json();
-  } catch (e) {
-    allSnapshots = [];
-  }
-  renderList(allSnapshots);
-  document.getElementById('snap-count').textContent =
-    allSnapshots.length > 0
-      ? `共 ${allSnapshots.length} 个快照`
-      : '暂无快照';
+    const r = await fetch('/api/snapshots?t=' + Date.now());
+    if (!r.ok) throw new Error('api fail');
+    const data = await r.json();
+    allSnapshots = data.snapshots || [];
 
-  if (allSnapshots.length > 0) {
-    selectSnap(allSnapshots[0]);
+    document.getElementById('snap-count').textContent =
+      allSnapshots.length > 0
+        ? `共 ${allSnapshots.length} 个快照`
+        : '暂无快照';
+
+    // 如果 server 正在扫描，显示 status
+    if (data.scanning) {
+      setScanStatus('⏳ 采集中...', true);
+    } else if (data.last_scan && !document.getElementById('scan-btn').disabled) {
+      setScanStatus('上次采集: ' + data.last_scan, false);
+    }
+
+    renderList(allSnapshots);
+    return data;
+  } catch (e) {
+    // 降级：直接读 snapshots.json（file:// 或非 server 模式）
+    try {
+      const r2 = await fetch('snapshots.json?t=' + Date.now());
+      if (!r2.ok) throw new Error('not found');
+      allSnapshots = await r2.json();
+    } catch (_) {
+      allSnapshots = [];
+    }
+    renderList(allSnapshots);
+    document.getElementById('snap-count').textContent =
+      allSnapshots.length > 0 ? `共 ${allSnapshots.length} 个快照` : '暂无快照';
+    return null;
   }
+}
+
+function setScanStatus(msg, spinning) {
+  const el = document.getElementById('scan-status');
+  el.innerHTML = spinning ? `<span class="spinning">↻</span> ${msg}` : msg;
+}
+
+async function triggerScan() {
+  const btn = document.getElementById('scan-btn');
+  btn.disabled = true;
+  setScanStatus('⏳ 正在触发采集...', true);
+
+  try {
+    const r = await fetch('/api/scan', { method: 'POST' });
+    const data = await r.json();
+    setScanStatus('⏳ 采集进行中，请稍候...', true);
+
+    // 轮询直到采集完成
+    startPolling();
+  } catch (e) {
+    setScanStatus('❌ 触发失败: ' + e.message, false);
+    btn.disabled = false;
+  }
+}
+
+function startPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    const data = await loadSnapshots();
+    if (data && !data.scanning) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+      document.getElementById('scan-btn').disabled = false;
+      setScanStatus('✅ 采集完成: ' + (data.last_scan || ''), false);
+
+      // 自动加载最新快照
+      if (allSnapshots.length > 0) {
+        selectSnap(allSnapshots[0]);
+      }
+    }
+  }, 2000);
 }
 
 function renderList(snaps) {
@@ -182,7 +269,6 @@ function renderList(snaps) {
     div.className = 'snap-item' + (name === currentSnap ? ' active' : '');
     div.dataset.name = name;
 
-    // 解析文件名 2026-05-11_10-00.html
     const m = name.match(/(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2})/);
     if (m) {
       const date = m[1];
@@ -191,7 +277,6 @@ function renderList(snaps) {
     } else {
       div.textContent = name.replace('.html', '');
     }
-
     div.onclick = () => selectSnap(name);
     list.appendChild(div);
   });
@@ -207,19 +292,16 @@ function selectSnap(name) {
   currentSnap = name;
   const url = 'snapshots/' + name;
 
-  // 更新列表高亮
   document.querySelectorAll('.snap-item').forEach(el => {
     el.classList.toggle('active', el.dataset.name === name);
   });
 
-  // 更新 iframe
   const frame = document.getElementById('content-frame');
   const empty = document.getElementById('empty-state');
   frame.src = url;
   frame.style.display = 'block';
   empty.style.display = 'none';
 
-  // 更新 toolbar
   const label = name.replace('.html', '').replace('_', ' ').replace(/-(\d{2})-(\d{2})$/, ' $1:$2');
   document.getElementById('current-label').textContent = '📅 ' + label;
 
@@ -232,13 +314,15 @@ function loadLatest() {
   if (allSnapshots.length > 0) {
     selectSnap(allSnapshots[0]);
   } else {
-    alert('暂无快照，请先运行 yarn_scan.py');
+    alert('暂无快照，请点击「⚡ 立即采集」');
   }
 }
 
-// 每5分钟自动刷新快照列表
-loadSnapshots();
-setInterval(loadSnapshots, 5 * 60 * 1000);
+// 初始加载，之后每分钟自动刷新列表
+loadSnapshots().then(data => {
+  if (data && allSnapshots.length > 0) selectSnap(allSnapshots[0]);
+});
+setInterval(loadSnapshots, 60 * 1000);
 </script>
 </body>
 </html>
