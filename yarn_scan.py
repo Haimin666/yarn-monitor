@@ -17,6 +17,9 @@ RM_BASE = f"http://{RM_HOST}:{RM_PORT}"
 SNAPSHOTS_DIR = os.path.join(os.path.dirname(__file__), "snapshots")
 SLOW_THRESHOLD_HOURS = 2  # 超过这个小时数认为是慢任务
 
+# 只展示这些类型的任务
+ALLOWED_TYPES = {"SPARK", "HIVE"}
+
 
 def fetch_json(path, timeout=15):
     url = f"{RM_BASE}/ws/v1/{path}"
@@ -86,10 +89,13 @@ def generate_html(metrics, apps, scheduler, ts):
     mem_pct = round(used_mem / total_mem * 100, 1) if total_mem else 0
     vcores_pct = round(used_vcores / total_vcores * 100, 1) if total_vcores else 0
 
-    # 处理 application 列表
+    # 处理 application 列表（只保留 SPARK/HIVE 类型）
     app_list = []
     if apps and "apps" in apps and apps["apps"] and "app" in apps["apps"]:
-        app_list = apps["apps"]["app"]
+        app_list = [
+            a for a in apps["apps"]["app"]
+            if a.get("applicationType", "").upper() in ALLOWED_TYPES
+        ]
 
     slow_apps = [a for a in app_list if a.get("elapsedTime", 0) > SLOW_THRESHOLD_HOURS * 3600 * 1000]
     slow_apps.sort(key=lambda x: -x.get("elapsedTime", 0))
@@ -122,7 +128,7 @@ def generate_html(metrics, apps, scheduler, ts):
         queue_rows = ""
         for q in queues:
             pending_style = "color:red;font-weight:bold" if q["num_pending"] > 0 else ""
-            queue_rows += f"""<tr>
+            queue_rows += f"""<tr data-queue="{q['name']}" onclick="filterByQueue('{q['name']}')" style="cursor:pointer">
   <td style="font-family:monospace">{q['name']}</td>
   <td>{queue_bar(q['used_pct'])} <span style="font-size:12px">{q['used_pct']}%</span></td>
   <td>{q['used_mb']//1024}G / {q['max_mb']//1024}G</td>
@@ -131,10 +137,10 @@ def generate_html(metrics, apps, scheduler, ts):
   <td style="{pending_style}">{q['num_pending']}{' ⚠️' if q['num_pending'] > 0 else ''}</td>
 </tr>"""
         queue_section = f"""<section>
-  <h2>📋 队列资源分配（Fair Scheduler）</h2>
+  <h2>📋 队列资源分配（Fair Scheduler）<span style="font-size:12px;color:#888;margin-left:8px">点击队列行可过滤任务</span></h2>
   <table>
     <thead><tr><th>队列名</th><th>内存占用率</th><th>内存(已用/上限)</th><th>vCores</th><th>运行</th><th>Pending</th></tr></thead>
-    <tbody>{queue_rows}</tbody>
+    <tbody id="queue-tbody">{queue_rows}</tbody>
   </table>
 </section>"""
     else:
@@ -150,8 +156,11 @@ def generate_html(metrics, apps, scheduler, ts):
         amem = a.get("allocatedMB", 0)
         avc = a.get("allocatedVCores", 0)
         progress = a.get("progress", 0)
+        app_type = a.get("applicationType", "")
         row_style = 'background:#fff3cd' if highlight else ''
-        return f"""<tr style="{row_style}">
+        log_btn = f'<a href="/app?id={app_id}&tab=logs" target="_blank" style="display:inline-block;padding:2px 7px;border-radius:4px;background:#0066cc;color:#fff;font-size:11px;text-decoration:none;margin-right:3px">日志</a>'
+        stage_btn = f'<a href="/app?id={app_id}&tab=stage" target="_blank" style="display:inline-block;padding:2px 7px;border-radius:4px;background:#27ae60;color:#fff;font-size:11px;text-decoration:none">Stage</a>'
+        return f"""<tr style="{row_style}" data-queue="{queue}" data-name="{a.get('name','').lower()}" data-user="{user.lower()}">
   <td><a href="{RM_BASE}/proxy/{app_id}/" target="_blank" style="color:#0066cc;font-family:monospace;font-size:12px">{app_id}</a></td>
   <td title="{a.get('name','')}">{name}</td>
   <td>{user}</td>
@@ -161,13 +170,14 @@ def generate_html(metrics, apps, scheduler, ts):
   <td>{format_mem(amem)}</td>
   <td>{avc}</td>
   <td>{progress:.0f}%</td>
+  <td>{log_btn}{stage_btn}</td>
 </tr>"""
 
     slow_rows = "\n".join(app_row(a, highlight=True) for a in slow_apps) if slow_apps else \
-        '<tr><td colspan="9" style="text-align:center;color:#888">暂无慢任务（运行 >{SLOW_THRESHOLD_HOURS}h）</td></tr>'
+        f'<tr><td colspan="10" style="text-align:center;color:#888">暂无慢任务（运行 >{SLOW_THRESHOLD_HOURS}h）</td></tr>'
 
     all_rows = "\n".join(app_row(a) for a in all_running) if all_running else \
-        '<tr><td colspan="9" style="text-align:center;color:#888">当前无运行中的任务</td></tr>'
+        '<tr><td colspan="10" style="text-align:center;color:#888">当前无运行中的 SPARK/HIVE 任务</td></tr>'
 
     return f"""<!DOCTYPE html>
 <html lang="zh">
@@ -191,11 +201,14 @@ def generate_html(metrics, apps, scheduler, ts):
   tr:hover {{ background: #f9f9f9; }}
   .badge {{ display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: bold; }}
   .badge-warn {{ background: #fff3cd; color: #856404; }}
+  #app-search {{ width: 280px; padding: 6px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; margin-bottom: 10px; }}
+  #queue-tbody tr.active-queue {{ background: #dce8ff !important; }}
+  .filter-info {{ font-size: 12px; color: #888; margin-left: 10px; }}
 </style>
 </head>
 <body>
 <h1>YARN 集群资源快照</h1>
-<div class="ts">采集时间：{now_str} &nbsp;|&nbsp; RM: {RM_BASE}</div>
+<div class="ts">采集时间：{now_str} &nbsp;|&nbsp; RM: {RM_BASE} &nbsp;|&nbsp; 仅显示 SPARK / HIVE 类型任务</div>
 
 <div class="cards">
   <div class="card">
@@ -227,7 +240,7 @@ def generate_html(metrics, apps, scheduler, ts):
   <table>
     <thead><tr>
       <th>Application ID</th><th>名称</th><th>用户</th><th>队列</th>
-      <th>状态</th><th>运行时长</th><th>内存</th><th>vCores</th><th>进度</th>
+      <th>状态</th><th>运行时长</th><th>内存</th><th>vCores</th><th>进度</th><th>操作</th>
     </tr></thead>
     <tbody>{slow_rows}</tbody>
   </table>
@@ -236,15 +249,75 @@ def generate_html(metrics, apps, scheduler, ts):
 {queue_section}
 
 <section>
-  <h2>所有运行中任务（共 {len(all_running)} 个，按运行时长降序）</h2>
+  <h2>所有运行中任务（共 {len(all_running)} 个，SPARK/HIVE，按运行时长降序）</h2>
+  <div>
+    <input type="text" id="app-search" placeholder="搜索任务名 / 用户 / 队列…" oninput="applyFilter()">
+    <span id="filter-info" class="filter-info"></span>
+    <button onclick="clearFilter()" style="margin-left:8px;padding:5px 10px;border:1px solid #ddd;border-radius:4px;cursor:pointer;background:#fff">清除过滤</button>
+  </div>
   <table>
     <thead><tr>
       <th>Application ID</th><th>名称</th><th>用户</th><th>队列</th>
-      <th>状态</th><th>运行时长</th><th>内存</th><th>vCores</th><th>进度</th>
+      <th>状态</th><th>运行时长</th><th>内存</th><th>vCores</th><th>进度</th><th>操作</th>
     </tr></thead>
-    <tbody>{all_rows}</tbody>
+    <tbody id="all-apps-tbody">{all_rows}</tbody>
   </table>
 </section>
+
+<script>
+var activeQueue = null;
+
+function filterByQueue(q) {{
+  if (activeQueue === q) {{
+    activeQueue = null;
+  }} else {{
+    activeQueue = q;
+  }}
+  applyFilter();
+}}
+
+function applyFilter() {{
+  var search = (document.getElementById('app-search').value || '').toLowerCase();
+  var rows = document.querySelectorAll('#all-apps-tbody tr');
+  var visible = 0;
+  rows.forEach(function(tr) {{
+    var queue = (tr.dataset.queue || '');
+    var name = (tr.dataset.name || '');
+    var user = (tr.dataset.user || '');
+    var queueMatch = !activeQueue || queue === activeQueue;
+    var searchMatch = !search || name.indexOf(search) >= 0 || user.indexOf(search) >= 0 || queue.toLowerCase().indexOf(search) >= 0;
+    var show = queueMatch && searchMatch;
+    tr.style.display = show ? '' : 'none';
+    if (show) visible++;
+  }});
+
+  // 更新队列高亮
+  document.querySelectorAll('#queue-tbody tr').forEach(function(tr) {{
+    if (activeQueue && tr.dataset.queue === activeQueue) {{
+      tr.classList.add('active-queue');
+    }} else {{
+      tr.classList.remove('active-queue');
+    }}
+  }});
+
+  // 更新过滤信息
+  var info = document.getElementById('filter-info');
+  var parts = [];
+  if (activeQueue) parts.push('队列: ' + activeQueue);
+  if (search) parts.push('搜索: "' + search + '"');
+  if (parts.length > 0) {{
+    info.textContent = '已过滤，显示 ' + visible + ' 条  (' + parts.join('，') + ')';
+  }} else {{
+    info.textContent = '';
+  }}
+}}
+
+function clearFilter() {{
+  activeQueue = null;
+  document.getElementById('app-search').value = '';
+  applyFilter();
+}}
+</script>
 
 </body>
 </html>"""

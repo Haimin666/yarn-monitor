@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>任务详情 - YARN Monitor</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, 'Helvetica Neue', sans-serif;
+    background: #1a1a1a;
+    color: #e0e0e0;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ── Toolbar ── */
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    background: #242424;
+    border-bottom: 1px solid #333;
+    flex-shrink: 0;
+  }
+  .toolbar .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 12px;
+    border-radius: 6px;
+    border: 1px solid #444;
+    background: #2e2e2e;
+    color: #e0e0e0;
+    font-size: 13px;
+    cursor: pointer;
+    text-decoration: none;
+    transition: background .15s;
+  }
+  .toolbar .btn:hover { background: #3a3a3a; }
+  .toolbar .btn.back { color: #7eb8f7; border-color: #3a5a8a; }
+  .toolbar .btn.refresh { color: #7ed9a0; border-color: #2a6045; }
+
+  /* ── App info strip ── */
+  .app-info {
+    padding: 6px 14px;
+    background: #1e1e1e;
+    border-bottom: 1px solid #2a2a2a;
+    font-size: 12px;
+    color: #888;
+    flex-shrink: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .app-info span { color: #aaa; margin-right: 16px; }
+  .app-info strong { color: #ccc; }
+
+  /* ── Tab bar ── */
+  .tabs {
+    display: flex;
+    gap: 0;
+    background: #242424;
+    border-bottom: 1px solid #333;
+    flex-shrink: 0;
+  }
+  .tab {
+    padding: 8px 22px;
+    cursor: pointer;
+    font-size: 13px;
+    color: #888;
+    border-bottom: 2px solid transparent;
+    user-select: none;
+    transition: color .15s;
+  }
+  .tab:hover { color: #ccc; }
+  .tab.active { color: #7eb8f7; border-bottom-color: #7eb8f7; }
+
+  /* ── Content area ── */
+  .content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+  }
+  iframe {
+    flex: 1;
+    border: none;
+    width: 100%;
+    height: 100%;
+    background: #fff;
+  }
+
+  /* ── Loading / error overlays ── */
+  .overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: #1a1a1a;
+    color: #666;
+    font-size: 14px;
+    gap: 12px;
+  }
+  .overlay.hidden { display: none; }
+  .spinner {
+    width: 28px; height: 28px;
+    border: 3px solid #333;
+    border-top-color: #7eb8f7;
+    border-radius: 50%;
+    animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Detail card (for JSON view) ── */
+  .detail-card {
+    position: absolute;
+    inset: 0;
+    overflow: auto;
+    padding: 16px;
+    background: #1a1a1a;
+  }
+  .detail-card.hidden { display: none; }
+  .kv-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .kv-table tr { border-bottom: 1px solid #2a2a2a; }
+  .kv-table td { padding: 6px 10px; vertical-align: top; }
+  .kv-table td:first-child { color: #888; width: 200px; white-space: nowrap; }
+  .kv-table td:last-child { color: #ddd; font-family: monospace; word-break: break-all; }
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <a class="btn back" href="javascript:history.back()">← 返回</a>
+  <button class="btn refresh" onclick="refresh()">🔄 刷新</button>
+  <span style="flex:1"></span>
+  <span id="app-id-label" style="font-size:12px;color:#666;font-family:monospace"></span>
+</div>
+
+<div class="app-info" id="app-info-bar">加载中…</div>
+
+<div class="tabs">
+  <div class="tab active" data-tab="logs" onclick="switchTab('logs')">📄 日志</div>
+  <div class="tab" data-tab="stage" onclick="switchTab('stage')">📊 Stage</div>
+  <div class="tab" data-tab="detail" onclick="switchTab('detail')">ℹ️ 详情</div>
+</div>
+
+<div class="content">
+  <div class="overlay" id="loading-overlay">
+    <div class="spinner"></div>
+    <div>加载中…</div>
+  </div>
+
+  <iframe id="main-frame" style="display:none"></iframe>
+
+  <div class="detail-card hidden" id="detail-card">
+    <table class="kv-table" id="detail-table"></table>
+  </div>
+</div>
+
+<script>
+var appId = '';
+var currentTab = 'logs';
+var appData = null;
+var rmBase = '';
+
+// 从 URL 参数中读取 id 和 tab
+(function init() {
+  var params = new URLSearchParams(location.search);
+  appId = params.get('id') || '';
+  var tab = params.get('tab') || 'logs';
+  document.getElementById('app-id-label').textContent = appId;
+  if (appId) {
+    loadAppMeta();
+    switchTab(tab);
+  } else {
+    showError('缺少 id 参数');
+  }
+})();
+
+function loadAppMeta() {
+  fetch('/api/app?id=' + encodeURIComponent(appId))
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      appData = data.app || data;
+      rmBase = appData._rmBase || '';
+      renderInfoBar();
+    })
+    .catch(function() {});
+}
+
+function renderInfoBar() {
+  if (!appData) return;
+  var a = appData;
+  var bar = document.getElementById('app-info-bar');
+  bar.innerHTML =
+    '<span><strong>' + esc(a.name || appId) + '</strong></span>' +
+    '<span>用户: <strong>' + esc(a.user || '-') + '</strong></span>' +
+    '<span>队列: <strong>' + esc(a.queue || '-') + '</strong></span>' +
+    '<span>类型: <strong>' + esc(a.applicationType || '-') + '</strong></span>' +
+    '<span>状态: <strong>' + esc(a.state || '-') + '</strong></span>' +
+    '<span>进度: <strong>' + (a.progress != null ? a.progress.toFixed(0) + '%' : '-') + '</strong></span>';
+}
+
+function switchTab(tab) {
+  currentTab = tab;
+  // 更新 tab 高亮
+  document.querySelectorAll('.tab').forEach(function(el) {
+    el.classList.toggle('active', el.dataset.tab === tab);
+  });
+  // 更新 URL 参数（不刷新）
+  var url = new URL(location.href);
+  url.searchParams.set('tab', tab);
+  history.replaceState(null, '', url.toString());
+
+  if (tab === 'logs') loadLogs();
+  else if (tab === 'stage') loadStage();
+  else if (tab === 'detail') loadDetail();
+}
+
+function loadLogs() {
+  showLoading();
+  fetch('/api/app_logs?id=' + encodeURIComponent(appId))
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var logUrl = data.log_url || '';
+      if (!logUrl) {
+        showError('未找到日志 URL（任务可能尚未启动 AM 或已完成）');
+        return;
+      }
+      showIframe(logUrl);
+    })
+    .catch(function(e) { showError('获取日志 URL 失败: ' + e); });
+}
+
+function loadStage() {
+  showLoading();
+  // Spark UI Stage 页面：通过 YARN proxy
+  fetch('/api/app?id=' + encodeURIComponent(appId))
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var a = data.app || data;
+      var trackingUrl = a.trackingUrl || '';
+      if (!trackingUrl) {
+        showError('未找到 Tracking URL，任务可能尚未启动或已完成');
+        return;
+      }
+      // Spark Stage UI
+      var stageUrl = trackingUrl.replace(/\/$/, '') + '/stages/';
+      showIframe(stageUrl);
+    })
+    .catch(function(e) { showError('获取 Stage URL 失败: ' + e); });
+}
+
+function loadDetail() {
+  hideIframe();
+  document.getElementById('loading-overlay').classList.remove('hidden');
+  fetch('/api/app?id=' + encodeURIComponent(appId))
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      document.getElementById('loading-overlay').classList.add('hidden');
+      var a = data.app || data;
+      var table = document.getElementById('detail-table');
+      var rows = '';
+      var fields = [
+        ['Application ID', 'id'], ['名称', 'name'], ['类型', 'applicationType'],
+        ['用户', 'user'], ['队列', 'queue'], ['状态', 'state'],
+        ['最终状态', 'finalStatus'], ['进度', 'progress'], ['诊断信息', 'diagnostics'],
+        ['Tracking URL', 'trackingUrl'], ['AM 日志', 'amContainerLogs'],
+        ['已分配内存(MB)', 'allocatedMB'], ['vCores', 'allocatedVCores'],
+        ['运行时长(ms)', 'elapsedTime'], ['开始时间', 'startedTime'], ['完成时间', 'finishedTime'],
+        ['集群ID', 'clusterId'],
+      ];
+      fields.forEach(function(f) {
+        var val = a[f[1]];
+        if (val == null) return;
+        if (f[1] === 'trackingUrl' || f[1] === 'amContainerLogs') {
+          val = '<a href="' + esc(val) + '" target="_blank" style="color:#7eb8f7">' + esc(val) + '</a>';
+        } else if (f[1].endsWith('Time') && typeof val === 'number' && val > 0) {
+          val = esc(String(val)) + ' <span style="color:#666">(' + new Date(val).toLocaleString() + ')</span>';
+        } else {
+          val = esc(String(val));
+        }
+        rows += '<tr><td>' + esc(f[0]) + '</td><td>' + val + '</td></tr>';
+      });
+      table.innerHTML = rows;
+      document.getElementById('detail-card').classList.remove('hidden');
+    })
+    .catch(function(e) { showError('获取详情失败: ' + e); });
+}
+
+function showLoading() {
+  document.getElementById('loading-overlay').classList.remove('hidden');
+  document.getElementById('main-frame').style.display = 'none';
+  document.getElementById('detail-card').classList.add('hidden');
+}
+
+function showIframe(url) {
+  document.getElementById('loading-overlay').classList.add('hidden');
+  document.getElementById('detail-card').classList.add('hidden');
+  var frame = document.getElementById('main-frame');
+  frame.style.display = 'block';
+  frame.src = url;
+}
+
+function hideIframe() {
+  document.getElementById('main-frame').style.display = 'none';
+  document.getElementById('main-frame').src = 'about:blank';
+  document.getElementById('detail-card').classList.add('hidden');
+}
+
+function showError(msg) {
+  document.getElementById('loading-overlay').classList.add('hidden');
+  hideIframe();
+  var card = document.getElementById('detail-card');
+  card.classList.remove('hidden');
+  document.getElementById('detail-table').innerHTML =
+    '<tr><td colspan="2" style="color:#e07070;padding:20px;text-align:center">' + esc(msg) + '</td></tr>';
+}
+
+function refresh() {
+  switchTab(currentTab);
+}
+
+function esc(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+</script>
+</body>
+</html>

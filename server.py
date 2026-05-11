@@ -7,6 +7,9 @@ server.py - YARN Monitor HTTP 服务器
   - 静态文件服务（index.html、snapshots/）
   - GET  /api/snapshots  → 返回快照列表 JSON
   - POST /api/scan       → 触发 yarn_scan.py 生成新快照
+  - GET  /app?id=xxx     → 返回 app_detail.html（任务详情页）
+  - GET  /api/app?id=xxx → 返回任务详情 JSON
+  - GET  /api/app_logs?id=xxx → 代理 YARN AM 日志
 
 用法：
     python3 server.py          # 默认 9903 端口
@@ -20,11 +23,18 @@ import sys
 import threading
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import urlparse, parse_qs
+from urllib.request import urlopen, Request
+from urllib.error import URLError
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 SNAPSHOTS_DIR = os.path.join(ROOT, "snapshots")
 SNAPSHOTS_JSON = os.path.join(ROOT, "snapshots.json")
 YARN_SCAN = os.path.join(ROOT, "yarn_scan.py")
+
+RM_HOST = os.environ.get("YARN_RM_HOST", "hadoop-nn-1.bigdata.shiqiao.com")
+RM_PORT = os.environ.get("YARN_RM_PORT", "8088")
+RM_BASE = f"http://{RM_HOST}:{RM_PORT}"
 
 # 全局状态：防止并发触发多次采集
 _scan_lock = threading.Lock()
@@ -75,6 +85,28 @@ def trigger_scan():
             _scanning = False
 
 
+def fetch_app_detail(app_id):
+    """从 YARN RM 获取单个 App 的详细信息"""
+    url = f"{RM_BASE}/ws/v1/cluster/apps/{app_id}"
+    try:
+        req = Request(url, headers={"Accept": "application/json"})
+        with urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read())
+    except URLError as e:
+        return {"error": str(e)}
+
+
+def fetch_app_logs_url(app_id):
+    """获取 AM 日志 URL（返回 tracking URL 或 log aggregation URL）"""
+    detail = fetch_app_detail(app_id)
+    if "error" in detail:
+        return None, detail["error"]
+    app = detail.get("app", {})
+    # 优先用 amContainerLogs，其次 trackingUrl
+    log_url = app.get("amContainerLogs") or app.get("trackingUrl") or ""
+    return log_url, None
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print(f"[{datetime.now().strftime('%H:%M:%S')}] {self.address_string()} {fmt % args}")
@@ -119,7 +151,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        path = self.path.split("?")[0]
+        parsed = urlparse(self.path)
+        path = parsed.path
+        qs = parse_qs(parsed.query)
 
         if path == "/api/snapshots":
             snaps = get_snapshots()
@@ -129,15 +163,42 @@ class Handler(BaseHTTPRequestHandler):
                 "scanning": _scanning,
                 "last_scan": _last_scan,
             })
+
         elif path == "/api/status":
             self.send_json(200, {"scanning": _scanning, "last_scan": _last_scan})
+
+        elif path == "/api/app":
+            app_id = qs.get("id", [None])[0]
+            if not app_id:
+                self.send_json(400, {"error": "缺少 id 参数"})
+                return
+            data = fetch_app_detail(app_id)
+            self.send_json(200, data)
+
+        elif path == "/api/app_logs":
+            app_id = qs.get("id", [None])[0]
+            if not app_id:
+                self.send_json(400, {"error": "缺少 id 参数"})
+                return
+            log_url, err = fetch_app_logs_url(app_id)
+            if err:
+                self.send_json(500, {"error": err})
+                return
+            self.send_json(200, {"app_id": app_id, "log_url": log_url, "rm_base": RM_BASE})
+
+        elif path == "/app":
+            self.serve_file(os.path.join(ROOT, "app_detail.html"))
+
         elif path == "/" or path == "/index.html":
             self.serve_file(os.path.join(ROOT, "index.html"))
+
         elif path.startswith("/snapshots/"):
             fname = path[len("/snapshots/"):]
             self.serve_file(os.path.join(SNAPSHOTS_DIR, fname))
+
         elif path == "/snapshots.json":
             self.serve_file(SNAPSHOTS_JSON)
+
         else:
             # 尝试从 ROOT 提供静态文件
             local = os.path.join(ROOT, path.lstrip("/"))
