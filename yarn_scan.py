@@ -29,6 +29,31 @@ def fetch_json(path, timeout=15):
         return None
 
 
+def parse_queues_fair(child_queues):
+    """解析 Fair Scheduler 队列（递归）"""
+    result = []
+    for q in (child_queues.get('queue') or []):
+        name = q.get('queueName', '')
+        used_mb = q.get('usedResources', {}).get('memory', 0)
+        max_mb = q.get('maxResources', {}).get('memory', 0)
+        used_vc = q.get('usedResources', {}).get('vCores', 0)
+        max_vc = q.get('maxResources', {}).get('vCores', 0)
+        num_active = q.get('numActiveApps', q.get('numActiveApplications', 0))
+        num_pending = q.get('numPendingApps', q.get('numPendingApplications', 0))
+        used_pct = round(used_mb / max_mb * 100, 1) if max_mb else 0
+        child = q.get('childQueues', {})
+        if child:
+            result.extend(parse_queues_fair(child))
+        else:
+            result.append({
+                'name': name, 'used_mb': used_mb, 'max_mb': max_mb,
+                'used_vc': used_vc, 'max_vc': max_vc,
+                'num_active': num_active, 'num_pending': num_pending,
+                'used_pct': used_pct,
+            })
+    return result
+
+
 def format_duration(ms):
     if ms < 0:
         return "N/A"
@@ -46,7 +71,7 @@ def format_mem(mb):
     return f"{mb} MB"
 
 
-def generate_html(metrics, apps, ts):
+def generate_html(metrics, apps, scheduler, ts):
     now_str = ts.strftime("%Y-%m-%d %H:%M:%S")
 
     # 集群概览数据
@@ -72,10 +97,48 @@ def generate_html(metrics, apps, ts):
     all_running = [a for a in app_list if a.get("state") == "RUNNING"]
     all_running.sort(key=lambda x: -x.get("elapsedTime", 0))
 
+    # 解析队列信息
+    queues = []
+    if scheduler:
+        try:
+            root_queue = scheduler.get("scheduler", {}).get("schedulerInfo", {}).get("rootQueue", {})
+            queues = parse_queues_fair(root_queue.get("childQueues", {}))
+            queues.sort(key=lambda q: -q["used_pct"])
+        except Exception:
+            pass
+
     def mem_bar(pct, color):
         return f"""<div style="background:#eee;border-radius:4px;height:12px;width:200px;display:inline-block;vertical-align:middle">
   <div style="background:{color};width:{min(pct,100)}%;height:100%;border-radius:4px"></div></div>
   <span style="margin-left:8px;font-weight:bold">{pct}%</span>"""
+
+    def queue_bar(pct):
+        w = min(pct, 100)
+        color = "#e74c3c" if pct > 80 else "#3498db"
+        return f'<div style="background:#eee;border-radius:3px;height:10px;width:120px;display:inline-block;vertical-align:middle"><div style="background:{color};width:{w}%;height:100%;border-radius:3px"></div></div>'
+
+    # 队列 HTML
+    if queues:
+        queue_rows = ""
+        for q in queues:
+            pending_style = "color:red;font-weight:bold" if q["num_pending"] > 0 else ""
+            queue_rows += f"""<tr>
+  <td style="font-family:monospace">{q['name']}</td>
+  <td>{queue_bar(q['used_pct'])} <span style="font-size:12px">{q['used_pct']}%</span></td>
+  <td>{q['used_mb']//1024}G / {q['max_mb']//1024}G</td>
+  <td>{q['used_vc']} / {q['max_vc']}</td>
+  <td>{q['num_active']}</td>
+  <td style="{pending_style}">{q['num_pending']}{' ⚠️' if q['num_pending'] > 0 else ''}</td>
+</tr>"""
+        queue_section = f"""<section>
+  <h2>📋 队列资源分配（Fair Scheduler）</h2>
+  <table>
+    <thead><tr><th>队列名</th><th>内存占用率</th><th>内存(已用/上限)</th><th>vCores</th><th>运行</th><th>Pending</th></tr></thead>
+    <tbody>{queue_rows}</tbody>
+  </table>
+</section>"""
+    else:
+        queue_section = ""
 
     def app_row(a, highlight=False):
         elapsed = a.get("elapsedTime", 0)
@@ -170,6 +233,8 @@ def generate_html(metrics, apps, ts):
   </table>
 </section>
 
+{queue_section}
+
 <section>
   <h2>所有运行中任务（共 {len(all_running)} 个，按运行时长降序）</h2>
   <table>
@@ -193,12 +258,13 @@ def main():
     print(f"[{ts}] 开始采集 YARN 数据...")
     metrics = fetch_json("cluster/metrics")
     apps = fetch_json("cluster/apps?state=RUNNING")
+    scheduler = fetch_json("cluster/scheduler")
 
     if metrics is None and apps is None:
         print("ERROR: 无法连接到 YARN RM，请检查网络", file=sys.stderr)
         sys.exit(1)
 
-    html = generate_html(metrics, apps, ts)
+    html = generate_html(metrics, apps, scheduler, ts)
     out_path = os.path.join(SNAPSHOTS_DIR, f"{ts_str}.html")
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(html)
