@@ -3,326 +3,623 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>YARN 集群监控</title>
+<title>大数据监控平台</title>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: -apple-system, sans-serif; display: flex; height: 100vh; overflow: hidden; background: #1a1a2e; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, 'PingFang SC', sans-serif; background: #0d1117; color: #c9d1d9; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
 
-  /* 左侧面板 */
-  #sidebar {
-    width: 230px;
-    min-width: 190px;
-    background: #16213e;
-    color: #ccc;
-    display: flex;
-    flex-direction: column;
-    border-right: 1px solid #0f3460;
-  }
-  #sidebar-header {
-    padding: 14px 12px 10px;
-    border-bottom: 1px solid #0f3460;
-  }
-  #sidebar-header h1 { font-size: 14px; color: #e0e0e0; line-height: 1.4; }
-  #sidebar-header p { font-size: 11px; color: #666; margin-top: 4px; }
+/* ── 顶部资源条 ─────────────────────────────────────────────── */
+#resource-bar {
+  background: #161b22;
+  border-bottom: 1px solid #21262d;
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-shrink: 0;
+  font-size: 12px;
+}
+#resource-bar h1 { font-size: 14px; color: #58a6ff; margin-right: 8px; white-space: nowrap; }
+.metric-group { display: flex; align-items: center; gap: 8px; }
+.metric-label { color: #8b949e; }
+.metric-val { color: #e6edf3; font-weight: 600; }
+.metric-bar { width: 80px; height: 6px; background: #21262d; border-radius: 3px; overflow: hidden; }
+.metric-bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s; }
+.bar-mem { background: #58a6ff; }
+.bar-cpu { background: #3fb950; }
+.bar-warn { background: #d29922; }
+.bar-danger { background: #f85149; }
+#last-update { margin-left: auto; color: #484f58; font-size: 11px; white-space: nowrap; }
+#refresh-indicator { color: #484f58; font-size: 11px; }
+.spinning { display: inline-block; animation: spin 1s linear infinite; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
-  #scan-btn {
-    margin: 8px 10px 0;
-    padding: 7px 0;
-    width: calc(100% - 20px);
-    border-radius: 6px;
-    border: none;
-    background: #4fc3f7;
-    color: #000;
-    cursor: pointer;
-    font-size: 12px;
-    font-weight: bold;
-    transition: background 0.15s;
-  }
-  #scan-btn:hover { background: #81d4fa; }
-  #scan-btn:disabled { background: #2a4a6a; color: #555; cursor: not-allowed; }
-  #scan-status {
-    margin: 4px 10px 0;
-    font-size: 10px;
-    color: #4fc3f7;
-    height: 14px;
-  }
+/* ── 主区域 ─────────────────────────────────────────────────── */
+#main { flex: 1; display: flex; overflow: hidden; }
 
-  #search {
-    margin: 8px 10px 6px;
-    padding: 6px 10px;
-    border-radius: 6px;
-    border: 1px solid #0f3460;
-    background: #0f1924;
-    color: #ccc;
-    font-size: 12px;
-    width: calc(100% - 20px);
-    outline: none;
-  }
-  #snapshot-list {
-    flex: 1;
-    overflow-y: auto;
-    padding: 4px 0;
-  }
-  .snap-item {
-    padding: 9px 14px;
-    cursor: pointer;
-    font-size: 12px;
-    color: #aaa;
-    border-left: 3px solid transparent;
-    transition: all 0.15s;
-    line-height: 1.4;
-  }
-  .snap-item:hover { background: #0f3460; color: #fff; }
-  .snap-item.active { background: #0f3460; color: #4fc3f7; border-left-color: #4fc3f7; font-weight: bold; }
-  .snap-date { font-size: 11px; color: #666; }
-  .snap-item.active .snap-date { color: #4fc3f7; }
+/* ── 左右列表面板 ────────────────────────────────────────────── */
+.panel {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #21262d;
+  overflow: hidden;
+}
+#panel-yarn { width: 50%; }
+#panel-ds   { flex: 1; border-right: none; }
 
-  #sidebar-footer {
-    padding: 10px 12px;
-    border-top: 1px solid #0f3460;
-    font-size: 11px;
-    color: #555;
-  }
+.panel-header {
+  background: #161b22;
+  border-bottom: 1px solid #21262d;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.panel-title { font-size: 13px; font-weight: 600; color: #e6edf3; }
+.panel-count { font-size: 11px; color: #8b949e; background: #21262d; padding: 1px 7px; border-radius: 10px; }
 
-  /* 右侧主区域 */
-  #main {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-  }
-  #toolbar {
-    background: #0f1924;
-    padding: 8px 16px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    border-bottom: 1px solid #0f3460;
-    font-size: 12px;
-    color: #888;
-    flex-shrink: 0;
-  }
-  #current-label { color: #4fc3f7; font-weight: bold; flex: 1; }
-  .btn {
-    padding: 4px 12px;
-    border-radius: 4px;
-    border: 1px solid #0f3460;
-    background: #16213e;
-    color: #aaa;
-    cursor: pointer;
-    font-size: 12px;
-    text-decoration: none;
-  }
-  .btn:hover { background: #0f3460; color: #fff; }
-  #content-frame {
-    flex: 1;
-    border: none;
-    width: 100%;
-    background: white;
-  }
-  #empty-state {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    color: #555;
-    gap: 12px;
-  }
-  #empty-state h2 { font-size: 18px; color: #777; }
-  #empty-state p { font-size: 13px; }
-  #empty-state code { background: #0f1924; padding: 8px 16px; border-radius: 6px; font-size: 12px; color: #4fc3f7; display: block; margin-top: 4px; }
+.filter-bar {
+  background: #0d1117;
+  border-bottom: 1px solid #21262d;
+  padding: 6px 10px;
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.filter-bar input, .filter-bar select {
+  background: #161b22;
+  border: 1px solid #30363d;
+  color: #c9d1d9;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  outline: none;
+}
+.filter-bar input { flex: 1; }
+.filter-bar input::placeholder { color: #484f58; }
 
-  #snapshot-list::-webkit-scrollbar { width: 4px; }
-  #snapshot-list::-webkit-scrollbar-track { background: transparent; }
-  #snapshot-list::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 2px; }
+.list-body { flex: 1; overflow-y: auto; }
+.list-body::-webkit-scrollbar { width: 4px; }
+.list-body::-webkit-scrollbar-thumb { background: #30363d; border-radius: 2px; }
 
-  .spinning { display: inline-block; animation: spin 1s linear infinite; }
-  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+/* ── 行样式 ─────────────────────────────────────────────────── */
+.row {
+  padding: 7px 12px;
+  border-bottom: 1px solid #161b22;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  transition: background 0.1s;
+}
+.row:hover { background: #161b22; }
+.row.selected { background: #1c2128; border-left: 2px solid #58a6ff; }
+
+.row-name { flex: 1; color: #c9d1d9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-sub { font-size: 10px; color: #8b949e; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-meta { font-size: 10px; color: #8b949e; white-space: nowrap; text-align: right; }
+.row-type { font-size: 10px; color: #8b949e; background: #21262d; padding: 1px 5px; border-radius: 4px; white-space: nowrap; }
+
+/* ── 状态标签 ───────────────────────────────────────────────── */
+.badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.badge-running  { background: #1a4a2e; color: #3fb950; }
+.badge-success  { background: #1a3a5c; color: #58a6ff; }
+.badge-failed   { background: #4a1a1a; color: #f85149; }
+.badge-killed   { background: #3a2a1a; color: #d29922; }
+.badge-accepted { background: #2a2a1a; color: #e3b341; }
+.badge-other    { background: #21262d; color: #8b949e; }
+
+/* ── 底部详情面板 ────────────────────────────────────────────── */
+#detail-panel {
+  height: 220px;
+  min-height: 120px;
+  border-top: 1px solid #21262d;
+  background: #161b22;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+#detail-header {
+  padding: 6px 12px;
+  border-bottom: 1px solid #21262d;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+#detail-title { color: #58a6ff; font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.detail-btn {
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid #30363d;
+  background: #21262d;
+  color: #c9d1d9;
+  cursor: pointer;
+  font-size: 11px;
+  text-decoration: none;
+  display: inline-block;
+}
+.detail-btn:hover { background: #30363d; }
+#detail-body { flex: 1; overflow: hidden; display: flex; }
+#detail-iframe { flex: 1; border: none; background: white; display: none; }
+#detail-info {
+  flex: 1;
+  padding: 10px 14px;
+  font-size: 12px;
+  color: #8b949e;
+  overflow-y: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.kv-grid { display: grid; grid-template-columns: 140px 1fr; gap: 4px 12px; font-size: 11px; width: 100%; }
+.kv-key { color: #8b949e; }
+.kv-val { color: #c9d1d9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kv-val a { color: #58a6ff; text-decoration: none; }
+.kv-val a:hover { text-decoration: underline; }
+
+/* ── 进度条 ─────────────────────────────────────────────────── */
+.progress { width: 60px; height: 4px; background: #21262d; border-radius: 2px; overflow: hidden; display: inline-block; vertical-align: middle; }
+.progress-fill { height: 100%; background: #3fb950; border-radius: 2px; }
+
+/* ── 空状态 ─────────────────────────────────────────────────── */
+.empty { padding: 30px; text-align: center; color: #484f58; font-size: 12px; }
 </style>
 </head>
 <body>
 
-<div id="sidebar">
-  <div id="sidebar-header">
-    <h1>🐘 YARN 集群监控</h1>
-    <p id="snap-count">加载中...</p>
+<!-- 顶部资源条 -->
+<div id="resource-bar">
+  <h1>🐘 大数据监控</h1>
+  <div class="metric-group">
+    <span class="metric-label">内存</span>
+    <span class="metric-val" id="m-mem">--</span>
+    <div class="metric-bar"><div class="metric-bar-fill bar-mem" id="b-mem" style="width:0%"></div></div>
+  </div>
+  <div class="metric-group">
+    <span class="metric-label">CPU核</span>
+    <span class="metric-val" id="m-cpu">--</span>
+    <div class="metric-bar"><div class="metric-bar-fill bar-cpu" id="b-cpu" style="width:0%"></div></div>
+  </div>
+  <div class="metric-group">
+    <span class="metric-label">运行中</span>
+    <span class="metric-val" id="m-running">--</span>
+  </div>
+  <div class="metric-group">
+    <span class="metric-label">节点</span>
+    <span class="metric-val" id="m-nodes">--</span>
+  </div>
+  <div class="metric-group">
+    <span class="metric-label">等待</span>
+    <span class="metric-val" id="m-pending">--</span>
+  </div>
+  <div id="last-update"></div>
+  <div id="refresh-indicator"></div>
+</div>
+
+<!-- 主区域 -->
+<div id="main">
+  <!-- YARN 任务列表 -->
+  <div class="panel" id="panel-yarn">
+    <div class="panel-header">
+      <span class="panel-title">⚡ YARN 运行中任务</span>
+      <span class="panel-count" id="yarn-count">-</span>
+    </div>
+    <div class="filter-bar">
+      <input id="yarn-search" type="text" placeholder="搜索任务名..." oninput="renderYarn()">
+      <select id="yarn-queue" onchange="renderYarn()">
+        <option value="">全部队列</option>
+      </select>
+      <select id="yarn-type" onchange="renderYarn()">
+        <option value="">全部类型</option>
+        <option value="SPARK">Spark</option>
+        <option value="Apache Flink">Flink</option>
+      </select>
+    </div>
+    <div class="list-body" id="yarn-list"></div>
   </div>
 
-  <button id="scan-btn" onclick="triggerScan()">⚡ 立即采集</button>
-  <div id="scan-status"></div>
-
-  <input id="search" type="text" placeholder="搜索快照..." oninput="filterList()">
-  <div id="snapshot-list"></div>
-  <div id="sidebar-footer">
-    快照由 yarn_scan.py 生成<br>
-    保留最近 30 天记录
+  <!-- 海豚调度实例 -->
+  <div class="panel" id="panel-ds">
+    <div class="panel-header">
+      <span class="panel-title">🐬 海豚调度实例</span>
+      <span class="panel-count" id="ds-count">-</span>
+    </div>
+    <div class="filter-bar">
+      <input id="ds-search" type="text" placeholder="搜索工作流名..." oninput="renderDs()">
+      <select id="ds-project" onchange="renderDs()">
+        <option value="">全部项目</option>
+      </select>
+      <select id="ds-state" onchange="renderDs()">
+        <option value="">全部状态</option>
+        <option value="RUNNING_EXECUTION">运行中</option>
+        <option value="SUCCESS">成功</option>
+        <option value="FAILURE">失败</option>
+      </select>
+    </div>
+    <div class="list-body" id="ds-list"></div>
   </div>
 </div>
 
-<div id="main">
-  <div id="toolbar">
-    <span id="current-label">请选择一个快照</span>
-    <a id="open-btn" class="btn" href="#" target="_blank" style="display:none">↗ 新窗口打开</a>
-    <button class="btn" onclick="loadLatest()">最新快照</button>
+<!-- 底部详情面板 -->
+<div id="detail-panel">
+  <div id="detail-header">
+    <span id="detail-title">点击任务查看详情</span>
+    <a id="detail-open-btn" class="detail-btn" href="#" target="_blank" style="display:none">↗ 新窗口</a>
+    <a id="detail-spark-btn" class="detail-btn" href="#" target="_blank" style="display:none">🔥 Spark UI</a>
+    <button id="detail-iframe-toggle" class="detail-btn" onclick="toggleIframe()" style="display:none">📌 内嵌预览</button>
   </div>
-  <iframe id="content-frame" style="display:none"></iframe>
-  <div id="empty-state">
-    <h2>📊 YARN 集群监控</h2>
-    <p>点击左上角「⚡ 立即采集」或左侧选择历史快照</p>
-    <p style="margin-top: 16px; color:#444">启动服务：</p>
-    <code>python3 server.py</code>
+  <div id="detail-body">
+    <iframe id="detail-iframe"></iframe>
+    <div id="detail-info">
+      <span style="color:#484f58">← 点击左侧任务查看详情</span>
+    </div>
   </div>
 </div>
 
 <script>
-let allSnapshots = [];
-let currentSnap = null;
-let pollTimer = null;
+// ── 全局数据 ──────────────────────────────────────────────────
+let yarnApps = [];
+let dsInstances = [];
+let dsProjects = [];
+let selectedYarnId = null;
+let selectedDsId = null;
+let iframeVisible = false;
+let refreshTimer = null;
 
-async function loadSnapshots() {
-  try {
-    const r = await fetch('/api/snapshots?t=' + Date.now());
-    if (!r.ok) throw new Error('api fail');
-    const data = await r.json();
-    allSnapshots = data.snapshots || [];
+// ── 状态工具 ─────────────────────────────────────────────────
+function badgeClass(state) {
+  const s = (state || "").toUpperCase();
+  if (["RUNNING", "RUNNING_EXECUTION"].includes(s)) return "badge-running";
+  if (["SUCCESS", "FINISHED"].includes(s)) return "badge-success";
+  if (["FAILED", "FAILURE"].includes(s)) return "badge-failed";
+  if (["KILLED"].includes(s)) return "badge-killed";
+  if (["SUBMITTED", "ACCEPTED"].includes(s)) return "badge-accepted";
+  return "badge-other";
+}
 
-    document.getElementById('snap-count').textContent =
-      allSnapshots.length > 0
-        ? `共 ${allSnapshots.length} 个快照`
-        : '暂无快照';
+function stateLabel(state) {
+  const map = {
+    "RUNNING_EXECUTION": "运行中", "SUCCESS": "成功", "FAILURE": "失败",
+    "RUNNING": "运行中", "FINISHED": "完成", "KILLED": "已杀",
+    "SUBMITTED": "提交中", "ACCEPTED": "排队中",
+  };
+  return map[state] || state || "-";
+}
 
-    // 如果 server 正在扫描，显示 status
-    if (data.scanning) {
-      setScanStatus('⏳ 采集中...', true);
-    } else if (data.last_scan && !document.getElementById('scan-btn').disabled) {
-      setScanStatus('上次采集: ' + data.last_scan, false);
-    }
+function fmtDuration(ms) {
+  if (!ms || ms < 0) return "-";
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return s + "s";
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + "m" + (s % 60) + "s";
+  const h = Math.floor(m / 60);
+  return h + "h" + (m % 60) + "m";
+}
 
-    renderList(allSnapshots);
-    return data;
-  } catch (e) {
-    // 降级：直接读 snapshots.json（file:// 或非 server 模式）
-    try {
-      const r2 = await fetch('snapshots.json?t=' + Date.now());
-      if (!r2.ok) throw new Error('not found');
-      allSnapshots = await r2.json();
-    } catch (_) {
-      allSnapshots = [];
-    }
-    renderList(allSnapshots);
-    document.getElementById('snap-count').textContent =
-      allSnapshots.length > 0 ? `共 ${allSnapshots.length} 个快照` : '暂无快照';
-    return null;
+function fmtMem(mb) {
+  if (mb >= 1024) return (mb / 1024).toFixed(1) + "g";
+  return mb + "m";
+}
+
+function fmtTime(ts) {
+  if (!ts) return "-";
+  // DS 时间格式: "2026-05-14T05:30:23.000+0000"
+  if (typeof ts === "string") {
+    const d = new Date(ts);
+    return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
   }
+  // YARN: unix ms
+  const d = new Date(ts);
+  return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
 }
 
-function setScanStatus(msg, spinning) {
-  const el = document.getElementById('scan-status');
-  el.innerHTML = spinning ? `<span class="spinning">↻</span> ${msg}` : msg;
-}
-
-async function triggerScan() {
-  const btn = document.getElementById('scan-btn');
-  btn.disabled = true;
-  setScanStatus('⏳ 正在触发采集...', true);
-
+// ── 加载 dashboard 数据 ─────────────────────────────────────
+async function loadDashboard() {
+  document.getElementById("refresh-indicator").innerHTML = '<span class="spinning">↻</span>';
   try {
-    const r = await fetch('/api/scan', { method: 'POST' });
+    const r = await fetch("/api/dashboard?t=" + Date.now());
+    if (!r.ok) throw new Error("api fail");
     const data = await r.json();
-    setScanStatus('⏳ 采集进行中，请稍候...', true);
 
-    // 轮询直到采集完成
-    startPolling();
+    updateMetrics(data.metrics || {});
+    yarnApps = data.apps || [];
+    dsInstances = data.ds_instances || [];
+    dsProjects = data.ds_projects || [];
+
+    buildQueueFilter();
+    buildProjectFilter();
+    renderYarn();
+    renderDs();
+
+    document.getElementById("last-update").textContent =
+      "更新: " + (data.last_update || "-");
   } catch (e) {
-    setScanStatus('❌ 触发失败: ' + e.message, false);
-    btn.disabled = false;
+    console.error("dashboard error:", e);
   }
+  document.getElementById("refresh-indicator").innerHTML = "";
 }
 
-function startPolling() {
-  if (pollTimer) clearInterval(pollTimer);
-  pollTimer = setInterval(async () => {
-    const data = await loadSnapshots();
-    if (data && !data.scanning) {
-      clearInterval(pollTimer);
-      pollTimer = null;
-      document.getElementById('scan-btn').disabled = false;
-      setScanStatus('✅ 采集完成: ' + (data.last_scan || ''), false);
+// ── 更新顶部资源条 ───────────────────────────────────────────
+function updateMetrics(m) {
+  const totalMB = m.totalMB || 1;
+  const usedMB = m.allocatedMB || 0;
+  const memPct = Math.round(usedMB / totalMB * 100);
 
-      // 自动加载最新快照
-      if (allSnapshots.length > 0) {
-        selectSnap(allSnapshots[0]);
-      }
-    }
-  }, 2000);
+  const totalCPU = m.totalVirtualCores || 1;
+  const usedCPU = m.allocatedVirtualCores || 0;
+  const cpuPct = Math.round(usedCPU / totalCPU * 100);
+
+  document.getElementById("m-mem").textContent =
+    fmtMem(usedMB) + "/" + fmtMem(totalMB) + " (" + memPct + "%)";
+  document.getElementById("m-cpu").textContent =
+    usedCPU + "/" + totalCPU + " (" + cpuPct + "%)";
+  document.getElementById("m-running").textContent = m.appsRunning || 0;
+  document.getElementById("m-nodes").textContent = (m.activeNodes || 0) + "/" + (m.totalNodes || 0);
+  document.getElementById("m-pending").textContent = m.containersPending || 0;
+
+  const memFill = document.getElementById("b-mem");
+  memFill.style.width = memPct + "%";
+  memFill.className = "metric-bar-fill " +
+    (memPct > 85 ? "bar-danger" : memPct > 70 ? "bar-warn" : "bar-mem");
+
+  const cpuFill = document.getElementById("b-cpu");
+  cpuFill.style.width = cpuPct + "%";
+  cpuFill.className = "metric-bar-fill " +
+    (cpuPct > 85 ? "bar-danger" : cpuPct > 70 ? "bar-warn" : "bar-cpu");
 }
 
-function renderList(snaps) {
-  const list = document.getElementById('snapshot-list');
-  list.innerHTML = '';
-  if (snaps.length === 0) {
-    list.innerHTML = '<div style="padding:20px;text-align:center;color:#555;font-size:12px">暂无快照</div>';
+// ── 队列筛选下拉 ─────────────────────────────────────────────
+function buildQueueFilter() {
+  const queues = [...new Set(yarnApps.map(a => a.queue).filter(Boolean))].sort();
+  const sel = document.getElementById("yarn-queue");
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">全部队列</option>';
+  queues.forEach(q => {
+    const opt = document.createElement("option");
+    opt.value = q;
+    opt.textContent = q.replace("root.", "");
+    if (q === cur) opt.selected = true;
+    sel.appendChild(opt);
+  });
+}
+
+function buildProjectFilter() {
+  const sel = document.getElementById("ds-project");
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">全部项目</option>';
+  dsProjects.forEach(p => {
+    const opt = document.createElement("option");
+    opt.value = p;
+    opt.textContent = p;
+    if (p === cur) opt.selected = true;
+    sel.appendChild(opt);
+  });
+}
+
+// ── 渲染 YARN 列表 ───────────────────────────────────────────
+function renderYarn() {
+  const search = document.getElementById("yarn-search").value.toLowerCase();
+  const queue  = document.getElementById("yarn-queue").value;
+  const type   = document.getElementById("yarn-type").value;
+
+  let filtered = yarnApps.filter(a => {
+    if (search && !a.name.toLowerCase().includes(search) && !a.id.includes(search)) return false;
+    if (queue && a.queue !== queue) return false;
+    if (type && a.applicationType !== type) return false;
+    return true;
+  });
+
+  document.getElementById("yarn-count").textContent = filtered.length;
+  const list = document.getElementById("yarn-list");
+  list.innerHTML = "";
+
+  if (filtered.length === 0) {
+    list.innerHTML = '<div class="empty">暂无运行中任务</div>';
     return;
   }
-  snaps.forEach(name => {
-    const div = document.createElement('div');
-    div.className = 'snap-item' + (name === currentSnap ? ' active' : '');
-    div.dataset.name = name;
 
-    const m = name.match(/(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2})/);
-    if (m) {
-      const date = m[1];
-      const time = m[2].replace('-', ':');
-      div.innerHTML = `<div>${time}</div><div class="snap-date">${date}</div>`;
-    } else {
-      div.textContent = name.replace('.html', '');
-    }
-    div.onclick = () => selectSnap(name);
+  filtered.forEach(app => {
+    const div = document.createElement("div");
+    div.className = "row" + (app.id === selectedYarnId ? " selected" : "");
+    div.onclick = () => selectYarnApp(app);
+
+    const elapsed = app.elapsedTime ? fmtDuration(app.elapsedTime) : "-";
+    const mem = app.allocatedMB ? fmtMem(app.allocatedMB) : "-";
+    const prog = Math.round(app.progress || 0);
+
+    div.innerHTML = `
+      <div style="flex:1;min-width:0">
+        <div class="row-name">${app.name}</div>
+        <div class="row-sub">${app.queue || "-"}  ${app.user || ""}</div>
+      </div>
+      <div style="text-align:right;flex-shrink:0">
+        <span class="badge ${badgeClass(app.state)}">${stateLabel(app.state)}</span>
+        <div class="row-meta">${elapsed}  ${mem}</div>
+        <div style="margin-top:3px">
+          <div class="progress"><div class="progress-fill" style="width:${prog}%"></div></div>
+          <span style="font-size:10px;color:#8b949e;margin-left:4px">${prog}%</span>
+        </div>
+      </div>`;
     list.appendChild(div);
   });
 }
 
-function filterList() {
-  const q = document.getElementById('search').value.toLowerCase();
-  const filtered = q ? allSnapshots.filter(s => s.includes(q)) : allSnapshots;
-  renderList(filtered);
-}
+// ── 渲染海豚实例 ─────────────────────────────────────────────
+function renderDs() {
+  const search  = document.getElementById("ds-search").value.toLowerCase();
+  const project = document.getElementById("ds-project").value;
+  const state   = document.getElementById("ds-state").value;
 
-function selectSnap(name) {
-  currentSnap = name;
-  const url = 'snapshots/' + name;
+  // 海豚状态映射（API 返回的 state 值）
+  const stateMap = {
+    "RUNNING_EXECUTION": "RUNNING_EXECUTION",
+    "SUCCESS": "SUCCESS",
+    "FAILURE": "FAILURE",
+  };
 
-  document.querySelectorAll('.snap-item').forEach(el => {
-    el.classList.toggle('active', el.dataset.name === name);
+  let filtered = dsInstances.filter(i => {
+    if (search && !i.name.toLowerCase().includes(search)) return false;
+    if (project && i.project !== project) return false;
+    if (state) {
+      const iState = (i.state || "").toUpperCase();
+      if (state === "RUNNING_EXECUTION" && !["RUNNING_EXECUTION", "RUNNING"].includes(iState)) return false;
+      if (state === "SUCCESS" && iState !== "SUCCESS") return false;
+      if (state === "FAILURE" && !["FAILURE", "FAILED"].includes(iState)) return false;
+    }
+    return true;
   });
 
-  const frame = document.getElementById('content-frame');
-  const empty = document.getElementById('empty-state');
-  frame.src = url;
-  frame.style.display = 'block';
-  empty.style.display = 'none';
+  document.getElementById("ds-count").textContent = filtered.length;
+  const list = document.getElementById("ds-list");
+  list.innerHTML = "";
 
-  const label = name.replace('.html', '').replace('_', ' ').replace(/-(\d{2})-(\d{2})$/, ' $1:$2');
-  document.getElementById('current-label').textContent = '📅 ' + label;
+  if (filtered.length === 0) {
+    list.innerHTML = '<div class="empty">暂无实例数据</div>';
+    return;
+  }
 
-  const openBtn = document.getElementById('open-btn');
-  openBtn.href = url;
-  openBtn.style.display = 'inline-block';
+  filtered.forEach(inst => {
+    const div = document.createElement("div");
+    div.className = "row" + (inst.id === selectedDsId ? " selected" : "");
+    div.onclick = () => selectDsInstance(inst);
+
+    const dur = inst.duration ? fmtDuration(inst.duration * 1000) : "-";
+    const startT = fmtTime(inst.startTime);
+    // 从 name 中提取工作流名（去掉 -0-timestamp 后缀）
+    const displayName = inst.name.replace(/-\d+-\d+$/, "");
+
+    div.innerHTML = `
+      <div style="flex:1;min-width:0">
+        <div class="row-name">${displayName}</div>
+        <div class="row-sub">${inst.project}  ${inst.executorName || ""}</div>
+      </div>
+      <div style="text-align:right;flex-shrink:0">
+        <span class="badge ${badgeClass(inst.state)}">${stateLabel(inst.state)}</span>
+        <div class="row-meta">${startT}  ${dur}</div>
+      </div>`;
+    list.appendChild(div);
+  });
 }
 
-function loadLatest() {
-  if (allSnapshots.length > 0) {
-    selectSnap(allSnapshots[0]);
+// ── 选中 YARN 任务 ───────────────────────────────────────────
+function selectYarnApp(app) {
+  selectedYarnId = app.id;
+  selectedDsId = null;
+  renderYarn();
+
+  const title = `${app.name}`;
+  document.getElementById("detail-title").textContent = `⚡ ${title}`;
+
+  // 按钮
+  const openBtn = document.getElementById("detail-open-btn");
+  openBtn.href = app.trackingUrl || "#";
+  openBtn.style.display = app.trackingUrl ? "inline-block" : "none";
+
+  const sparkBtn = document.getElementById("detail-spark-btn");
+  sparkBtn.href = `/proxy?url=${encodeURIComponent(app.trackingUrl || "")}`;
+  sparkBtn.style.display = "none"; // iframe 代理按钮用 toggle
+
+  const iframeToggle = document.getElementById("detail-iframe-toggle");
+  iframeToggle.style.display = app.trackingUrl ? "inline-block" : "none";
+  iframeToggle.dataset.url = `/proxy?url=${encodeURIComponent(app.trackingUrl || "")}`;
+
+  // 详情 KV
+  const elapsed = fmtDuration(app.elapsedTime);
+  const start = app.startedTime ? new Date(app.startedTime).toLocaleString("zh-CN") : "-";
+  document.getElementById("detail-info").innerHTML = `
+    <div class="kv-grid">
+      <div class="kv-key">应用ID</div><div class="kv-val">${app.id}</div>
+      <div class="kv-key">类型</div><div class="kv-val">${app.applicationType || "-"}</div>
+      <div class="kv-key">队列</div><div class="kv-val">${app.queue || "-"}</div>
+      <div class="kv-key">用户</div><div class="kv-val">${app.user || "-"}</div>
+      <div class="kv-key">状态</div><div class="kv-val"><span class="badge ${badgeClass(app.state)}">${stateLabel(app.state)}</span></div>
+      <div class="kv-key">进度</div><div class="kv-val">${Math.round(app.progress || 0)}%</div>
+      <div class="kv-key">已运行</div><div class="kv-val">${elapsed}</div>
+      <div class="kv-key">启动时间</div><div class="kv-val">${start}</div>
+      <div class="kv-key">内存</div><div class="kv-val">${fmtMem(app.allocatedMB || 0)}</div>
+      <div class="kv-key">CPU核</div><div class="kv-val">${app.allocatedVCores || 0}</div>
+      <div class="kv-key">容器数</div><div class="kv-val">${app.runningContainers || 0}</div>
+      <div class="kv-key">Tracking URL</div><div class="kv-val"><a href="${app.trackingUrl}" target="_blank">${app.trackingUrl || "-"}</a></div>
+    </div>`;
+
+  hideIframe();
+  document.getElementById("detail-info").style.display = "flex";
+}
+
+// ── 选中海豚实例 ─────────────────────────────────────────────
+function selectDsInstance(inst) {
+  selectedDsId = inst.id;
+  selectedYarnId = null;
+  renderDs();
+
+  const displayName = inst.name.replace(/-\d+-\d+$/, "");
+  document.getElementById("detail-title").textContent = `🐬 ${displayName}`;
+
+  document.getElementById("detail-open-btn").style.display = "none";
+  document.getElementById("detail-spark-btn").style.display = "none";
+  document.getElementById("detail-iframe-toggle").style.display = "none";
+
+  const dur = inst.duration ? fmtDuration(inst.duration * 1000) : "-";
+  const startT = inst.startTime ? new Date(inst.startTime).toLocaleString("zh-CN") : "-";
+  const endT = inst.endTime ? new Date(inst.endTime).toLocaleString("zh-CN") : "-";
+
+  document.getElementById("detail-info").innerHTML = `
+    <div class="kv-grid">
+      <div class="kv-key">工作流名</div><div class="kv-val">${displayName}</div>
+      <div class="kv-key">实例ID</div><div class="kv-val">${inst.id}</div>
+      <div class="kv-key">项目</div><div class="kv-val">${inst.project}</div>
+      <div class="kv-key">状态</div><div class="kv-val"><span class="badge ${badgeClass(inst.state)}">${stateLabel(inst.state)}</span></div>
+      <div class="kv-key">执行人</div><div class="kv-val">${inst.executorName || "-"}</div>
+      <div class="kv-key">触发方式</div><div class="kv-val">${inst.commandType || "-"}</div>
+      <div class="kv-key">开始时间</div><div class="kv-val">${startT}</div>
+      <div class="kv-key">结束时间</div><div class="kv-val">${endT}</div>
+      <div class="kv-key">耗时</div><div class="kv-val">${dur}</div>
+    </div>`;
+
+  hideIframe();
+  document.getElementById("detail-info").style.display = "flex";
+}
+
+// ── iframe 内嵌预览 ──────────────────────────────────────────
+function toggleIframe() {
+  const btn = document.getElementById("detail-iframe-toggle");
+  const url = btn.dataset.url;
+  if (iframeVisible) {
+    hideIframe();
+    document.getElementById("detail-info").style.display = "flex";
+    btn.textContent = "📌 内嵌预览";
   } else {
-    alert('暂无快照，请点击「⚡ 立即采集」');
+    document.getElementById("detail-info").style.display = "none";
+    const iframe = document.getElementById("detail-iframe");
+    iframe.src = url;
+    iframe.style.display = "block";
+    iframeVisible = true;
+    btn.textContent = "📋 查看详情";
   }
 }
 
-// 初始加载，之后每分钟自动刷新列表
-loadSnapshots().then(data => {
-  if (data && allSnapshots.length > 0) selectSnap(allSnapshots[0]);
-});
-setInterval(loadSnapshots, 60 * 1000);
+function hideIframe() {
+  const iframe = document.getElementById("detail-iframe");
+  iframe.style.display = "none";
+  iframe.src = "";
+  iframeVisible = false;
+  const btn = document.getElementById("detail-iframe-toggle");
+  if (btn) btn.textContent = "📌 内嵌预览";
+}
+
+// ── 初始化 ───────────────────────────────────────────────────
+loadDashboard();
+// 每 30 秒自动刷新
+refreshTimer = setInterval(loadDashboard, 30 * 1000);
 </script>
 </body>
 </html>

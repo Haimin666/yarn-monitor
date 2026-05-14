@@ -1,29 +1,31 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-server.py - YARN Monitor HTTP 服务器
+server.py - YARN + DolphinScheduler 一站式监控服务器
 
 功能：
   - 静态文件服务（index.html、snapshots/）
-  - GET  /api/snapshots  → 返回快照列表 JSON
-  - POST /api/scan       → 触发 yarn_scan.py 生成新快照
-  - GET  /app?id=xxx     → 返回 app_detail.html（任务详情页）
-  - GET  /api/app?id=xxx → 返回任务详情 JSON
+  - GET  /api/snapshots      → 返回快照列表 JSON
+  - POST /api/scan           → 触发 yarn_scan.py 生成新快照
+  - GET  /api/dashboard      → 返回聚合监控数据（YARN资源+任务+海豚实例）
+  - GET  /app?id=xxx         → 返回 app_detail.html（任务详情页）
+  - GET  /api/app?id=xxx     → 返回任务详情 JSON
   - GET  /api/app_logs?id=xxx → 代理 YARN AM 日志
+  - GET  /proxy?url=xxx      → 反向代理集群内网请求
 
 用法：
     python3 server.py          # 默认 9903 端口
     python3 server.py 8080     # 指定端口
-    python3 server.py --help
 """
 import json
 import os
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, urlencode
 from urllib.request import urlopen, Request
 from urllib.error import URLError
 
@@ -36,17 +38,172 @@ RM_HOST = os.environ.get("YARN_RM_HOST", "hadoop-nn-1.bigdata.shiqiao.com")
 RM_PORT = os.environ.get("YARN_RM_PORT", "8088")
 RM_BASE = f"http://{RM_HOST}:{RM_PORT}"
 
-# 全局状态：防止并发触发多次采集
+DS_BASE = os.environ.get("DS_BASE_URL", "http://olds.bigdata.shiqiao.com")
+DS_TOKEN = os.environ.get("DS_TOKEN", "2a323940d94d9a0c47f343d1c91304e2")
+# 监控的海豚项目列表（逗号分隔环境变量可覆盖）
+DS_PROJECTS = os.environ.get("DS_PROJECTS", "lion_dw_dws,lion_dw_dwd").split(",")
+
+# 自动刷新间隔（秒）
+DASHBOARD_REFRESH = int(os.environ.get("DASHBOARD_REFRESH", "30"))
+
+# ── 全局状态 ───────────────────────────────────────────────────────────────────
 _scan_lock = threading.Lock()
 _scanning = False
 _last_scan = None
+
+# dashboard 缓存
+_dashboard_cache = {}
+_dashboard_lock = threading.Lock()
+_dashboard_last_update = None
+
+
+# ── YARN API ──────────────────────────────────────────────────────────────────
+
+def fetch_yarn_metrics():
+    """获取 YARN 集群资源指标"""
+    url = f"{RM_BASE}/ws/v1/cluster/metrics"
+    try:
+        req = Request(url, headers={"Accept": "application/json"})
+        with urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            return data.get("clusterMetrics", {})
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def fetch_yarn_apps_running():
+    """获取 YARN 运行中的应用列表"""
+    url = f"{RM_BASE}/ws/v1/cluster/apps?states=RUNNING"
+    try:
+        req = Request(url, headers={"Accept": "application/json"})
+        with urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+            apps = data.get("apps", {})
+            if not apps:
+                return []
+            raw = apps.get("app", [])
+            # 精简字段，减少传输量
+            result = []
+            for app in raw:
+                result.append({
+                    "id": app.get("id", ""),
+                    "name": app.get("name", ""),
+                    "user": app.get("user", ""),
+                    "queue": app.get("queue", ""),
+                    "state": app.get("state", ""),
+                    "applicationType": app.get("applicationType", ""),
+                    "progress": app.get("progress", 0),
+                    "startedTime": app.get("startedTime", 0),
+                    "elapsedTime": app.get("elapsedTime", 0),
+                    "trackingUrl": app.get("trackingUrl", ""),
+                    "allocatedMB": app.get("allocatedMB", 0),
+                    "allocatedVCores": app.get("allocatedVCores", 0),
+                    "runningContainers": app.get("runningContainers", 0),
+                })
+            # 按启动时间降序
+            result.sort(key=lambda x: x["startedTime"], reverse=True)
+            return result
+    except Exception as e:
+        return []
+
+
+def fetch_app_detail(app_id):
+    """从 YARN RM 获取单个 App 的详细信息"""
+    url = f"{RM_BASE}/ws/v1/cluster/apps/{app_id}"
+    try:
+        req = Request(url, headers={"Accept": "application/json"})
+        with urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read())
+    except URLError as e:
+        return {"error": str(e)}
+
+
+def fetch_app_logs_url(app_id):
+    """获取 AM 日志 URL（返回 tracking URL 或 log aggregation URL）"""
+    detail = fetch_app_detail(app_id)
+    if "error" in detail:
+        return None, detail["error"]
+    app = detail.get("app", {})
+    log_url = app.get("amContainerLogs") or app.get("trackingUrl") or ""
+    return log_url, None
+
+
+# ── DolphinScheduler API ──────────────────────────────────────────────────────
+
+def _ds_headers():
+    return {
+        "token": DS_TOKEN,
+        "Accept": "application/json",
+        "language": "zh_CN",
+    }
+
+
+def fetch_ds_instances(project_name, page_size=20, state_type=""):
+    """获取海豚调度工作流实例列表"""
+    url = (f"{DS_BASE}/dolphinscheduler/projects/{project_name}/instance/list-paging"
+           f"?pageSize={page_size}&pageNo=1&searchVal=&stateType={state_type}"
+           f"&startDate=&endDate=&executorName=")
+    try:
+        req = Request(url, headers=_ds_headers())
+        with urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            if data.get("code") == 0:
+                items = data.get("data", {}).get("totalList", [])
+                # 精简字段
+                result = []
+                for item in items:
+                    result.append({
+                        "id": item.get("id"),
+                        "name": item.get("name", ""),
+                        "state": item.get("state", ""),
+                        "startTime": item.get("startTime", ""),
+                        "endTime": item.get("endTime", ""),
+                        "duration": item.get("duration", 0),
+                        "executorName": item.get("executorName", ""),
+                        "commandType": item.get("commandType", ""),
+                        "project": project_name,
+                    })
+                return result
+            return []
+    except Exception:
+        return []
+
+
+# ── 后台自动刷新 ───────────────────────────────────────────────────────────────
+
+def _refresh_dashboard():
+    """后台线程：定期刷新 dashboard 数据"""
+    while True:
+        try:
+            metrics = fetch_yarn_metrics()
+            apps = fetch_yarn_apps_running()
+
+            ds_instances = []
+            for proj in DS_PROJECTS:
+                proj = proj.strip()
+                if proj:
+                    items = fetch_ds_instances(proj, page_size=20)
+                    ds_instances.extend(items)
+            # 按开始时间降序
+            ds_instances.sort(key=lambda x: x.get("startTime") or "", reverse=True)
+
+            with _dashboard_lock:
+                global _dashboard_last_update
+                _dashboard_cache["metrics"] = metrics
+                _dashboard_cache["apps"] = apps
+                _dashboard_cache["ds_instances"] = ds_instances
+                _dashboard_last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        except Exception as e:
+            print(f"[dashboard] 刷新失败: {e}")
+
+        time.sleep(DASHBOARD_REFRESH)
 
 
 def get_snapshots():
     if os.path.exists(SNAPSHOTS_JSON):
         with open(SNAPSHOTS_JSON) as f:
             return json.load(f)
-    # 降级：直接扫目录
     if os.path.isdir(SNAPSHOTS_DIR):
         return sorted([f for f in os.listdir(SNAPSHOTS_DIR) if f.endswith(".html")], reverse=True)
     return []
@@ -85,27 +242,7 @@ def trigger_scan():
             _scanning = False
 
 
-def fetch_app_detail(app_id):
-    """从 YARN RM 获取单个 App 的详细信息"""
-    url = f"{RM_BASE}/ws/v1/cluster/apps/{app_id}"
-    try:
-        req = Request(url, headers={"Accept": "application/json"})
-        with urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read())
-    except URLError as e:
-        return {"error": str(e)}
-
-
-def fetch_app_logs_url(app_id):
-    """获取 AM 日志 URL（返回 tracking URL 或 log aggregation URL）"""
-    detail = fetch_app_detail(app_id)
-    if "error" in detail:
-        return None, detail["error"]
-    app = detail.get("app", {})
-    # 优先用 amContainerLogs，其次 trackingUrl
-    log_url = app.get("amContainerLogs") or app.get("trackingUrl") or ""
-    return log_url, None
-
+# ── HTTP 处理器 ────────────────────────────────────────────────────────────────
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
@@ -167,6 +304,14 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/status":
             self.send_json(200, {"scanning": _scanning, "last_scan": _last_scan})
 
+        elif path == "/api/dashboard":
+            with _dashboard_lock:
+                data = dict(_dashboard_cache)
+                data["last_update"] = _dashboard_last_update
+                data["refresh_interval"] = DASHBOARD_REFRESH
+                data["ds_projects"] = DS_PROJECTS
+            self.send_json(200, data)
+
         elif path == "/api/app":
             app_id = qs.get("id", [None])[0]
             if not app_id:
@@ -191,7 +336,6 @@ class Handler(BaseHTTPRequestHandler):
             if not target:
                 self.send_json(400, {"error": "缺少 url 参数"})
                 return
-            # 安全：只允许代理集群内网地址（RM_HOST 或 hadoop- 开头的节点）
             from urllib.parse import urlparse as _up
             _parsed = _up(target)
             _host = _parsed.hostname or ""
@@ -226,7 +370,6 @@ class Handler(BaseHTTPRequestHandler):
             self.serve_file(SNAPSHOTS_JSON)
 
         else:
-            # 尝试从 ROOT 提供静态文件
             local = os.path.join(ROOT, path.lstrip("/"))
             if os.path.isfile(local):
                 self.serve_file(local)
@@ -237,7 +380,6 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split("?")[0]
         if path == "/api/scan":
-            # 在后台线程执行采集，立即返回 accepted
             t = threading.Thread(target=trigger_scan, daemon=True)
             t.start()
             self.send_json(202, {"status": "accepted", "message": "采集已触发，请稍候刷新列表"})
@@ -258,9 +400,16 @@ def main():
             pass
 
     os.makedirs(SNAPSHOTS_DIR, exist_ok=True)
+
+    # 启动后台 dashboard 刷新线程
+    t = threading.Thread(target=_refresh_dashboard, daemon=True)
+    t.start()
+    print(f"[server] Dashboard 自动刷新已启动（间隔 {DASHBOARD_REFRESH}s）")
+
     server = HTTPServer(("0.0.0.0", port), Handler)
     print(f"YARN Monitor 服务已启动: http://0.0.0.0:{port}")
     print(f"  快照目录: {SNAPSHOTS_DIR}")
+    print(f"  海豚项目: {DS_PROJECTS}")
     print(f"  Ctrl+C 停止")
     try:
         server.serve_forever()
