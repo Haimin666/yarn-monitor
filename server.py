@@ -34,16 +34,48 @@ SNAPSHOTS_DIR = os.path.join(ROOT, "snapshots")
 SNAPSHOTS_JSON = os.path.join(ROOT, "snapshots.json")
 YARN_SCAN = os.path.join(ROOT, "yarn_scan.py")
 
+# ── 读取 .env 配置文件 ────────────────────────────────────────
+def _load_env(path):
+    if not os.path.exists(path):
+        return
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, _, val = line.partition("=")
+                key = key.strip()
+                val = val.strip()
+                if key and key not in os.environ:
+                    os.environ[key] = val
+
+_load_env(os.path.join(ROOT, ".env"))
+
 RM_HOST = os.environ.get("YARN_RM_HOST", "hadoop-nn-1.bigdata.shiqiao.com")
 RM_PORT = os.environ.get("YARN_RM_PORT", "8088")
 RM_BASE = f"http://{RM_HOST}:{RM_PORT}"
 
 DS_BASE = os.environ.get("DS_BASE_URL", "http://olds.bigdata.shiqiao.com")
 DS_TOKEN = os.environ.get("DS_TOKEN", "2a323940d94d9a0c47f343d1c91304e2")
-# 监控的海豚项目列表（逗号分隔环境变量可覆盖）
-DS_PROJECTS = os.environ.get("DS_PROJECTS", "lion_dw_ods,lion_dw_dws,lion_dw_dwd").split(",")
+DS_PROJECTS = [p.strip() for p in os.environ.get("DS_PROJECTS", "lion_dw_ods,lion_dw_dws,lion_dw_dwd").split(",") if p.strip()]
 
-# 自动刷新间隔（秒）
+# 项目名 → ID 映射（用于生成海豚跳转链接）
+def _parse_project_ids():
+    raw = os.environ.get("DS_PROJECT_IDS", "")
+    result = {}
+    for item in raw.split(","):
+        item = item.strip()
+        if ":" in item:
+            name, _, pid = item.rpartition(":")
+            try:
+                result[name.strip()] = int(pid.strip())
+            except ValueError:
+                pass
+    return result
+
+DS_PROJECT_IDS = _parse_project_ids()
+
 DASHBOARD_REFRESH = int(os.environ.get("DASHBOARD_REFRESH", "30"))
 
 # ── 全局状态 ───────────────────────────────────────────────────────────────────
@@ -310,6 +342,8 @@ class Handler(BaseHTTPRequestHandler):
                 data["last_update"] = _dashboard_last_update
                 data["refresh_interval"] = DASHBOARD_REFRESH
                 data["ds_projects"] = DS_PROJECTS
+                data["ds_project_ids"] = DS_PROJECT_IDS
+                data["ds_base"] = DS_BASE
             self.send_json(200, data)
 
         elif path == "/api/app":

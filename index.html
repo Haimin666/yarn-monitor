@@ -270,6 +270,8 @@ body { font-family: -apple-system, 'PingFang SC', sans-serif; background: #0d111
 let yarnApps = [];
 let dsInstances = [];
 let dsProjects = [];
+let dsProjectIds = {};
+let dsBaseUrl = "http://olds.bigdata.shiqiao.com";
 let selectedYarnId = null;
 let selectedDsId = null;
 let iframeVisible = false;
@@ -334,6 +336,8 @@ async function loadDashboard() {
     yarnApps = data.apps || [];
     dsInstances = data.ds_instances || [];
     dsProjects = data.ds_projects || [];
+    dsProjectIds = data.ds_project_ids || {};
+    dsBaseUrl = data.ds_base || dsBaseUrl;
 
     buildQueueFilter();
     buildProjectFilter();
@@ -569,8 +573,11 @@ function selectDsInstance(inst) {
   document.getElementById("detail-spark-btn").style.display = "none";
   document.getElementById("detail-iframe-toggle").style.display = "none";
 
-  // 海豚实例列表页跳转（项目实例列表，过滤当前实例名）
-  const dsUrl = `http://olds.bigdata.shiqiao.com/dolphinscheduler/ui/#/projects/${inst.project}/instance/list`;
+  // 海豚实例列表页跳转（有项目 ID 时跳实例详情，否则跳列表）
+  const projId = dsProjectIds[inst.project];
+  const dsUrl = projId
+    ? `${dsBaseUrl}/dolphinscheduler/ui/#/projects/${projId}/instance/list`
+    : `${dsBaseUrl}/dolphinscheduler/ui/#/projects/${inst.project}/instance/list`;
   const openBtn = document.getElementById("detail-open-btn");
   openBtn.href = dsUrl;
   openBtn.textContent = "🐬 海豚实例";
