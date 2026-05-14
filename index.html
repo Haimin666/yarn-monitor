@@ -573,11 +573,9 @@ function selectDsInstance(inst) {
   document.getElementById("detail-spark-btn").style.display = "none";
   document.getElementById("detail-iframe-toggle").style.display = "none";
 
-  // 海豚实例列表页跳转（有项目 ID 时跳实例详情，否则跳列表）
-  const projId = dsProjectIds[inst.project];
-  const dsUrl = projId
-    ? `${dsBaseUrl}/dolphinscheduler/ui/#/projects/${projId}/instance/list`
-    : `${dsBaseUrl}/dolphinscheduler/ui/#/projects/${inst.project}/instance/list`;
+  // 海豚实例详情页：/dolphinscheduler/ui/#/projects/instance/list/{instanceId}?id={processDefinitionId}
+  const defId = inst.processDefinitionId || "";
+  const dsUrl = `${dsBaseUrl}/dolphinscheduler/ui/#/projects/instance/list/${inst.id}?id=${defId}`;
   const openBtn = document.getElementById("detail-open-btn");
   openBtn.href = dsUrl;
   openBtn.textContent = "🐬 海豚实例";

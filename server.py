@@ -193,6 +193,7 @@ def fetch_ds_instances(project_name, page_size=20, state_type=""):
                         "duration": item.get("duration", 0),
                         "executorName": item.get("executorName", ""),
                         "commandType": item.get("commandType", ""),
+                        "processDefinitionId": item.get("processDefinitionId"),
                         "project": project_name,
                     })
                 return result
