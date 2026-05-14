@@ -522,6 +522,7 @@ function selectYarnApp(app) {
   // 按钮
   const openBtn = document.getElementById("detail-open-btn");
   openBtn.href = app.trackingUrl || "#";
+  openBtn.textContent = "↗ 新窗口";
   openBtn.style.display = app.trackingUrl ? "inline-block" : "none";
 
   const sparkBtn = document.getElementById("detail-spark-btn");
@@ -567,6 +568,13 @@ function selectDsInstance(inst) {
   document.getElementById("detail-open-btn").style.display = "none";
   document.getElementById("detail-spark-btn").style.display = "none";
   document.getElementById("detail-iframe-toggle").style.display = "none";
+
+  // 海豚实例列表页跳转（项目实例列表，过滤当前实例名）
+  const dsUrl = `http://olds.bigdata.shiqiao.com/dolphinscheduler/ui/#/projects/${inst.project}/instance/list`;
+  const openBtn = document.getElementById("detail-open-btn");
+  openBtn.href = dsUrl;
+  openBtn.textContent = "🐬 海豚实例";
+  openBtn.style.display = "inline-block";
 
   const dur = inst.duration ? fmtDuration(inst.duration * 1000) : "-";
   const startT = inst.startTime ? new Date(inst.startTime).toLocaleString("zh-CN") : "-";

@@ -41,7 +41,7 @@ RM_BASE = f"http://{RM_HOST}:{RM_PORT}"
 DS_BASE = os.environ.get("DS_BASE_URL", "http://olds.bigdata.shiqiao.com")
 DS_TOKEN = os.environ.get("DS_TOKEN", "2a323940d94d9a0c47f343d1c91304e2")
 # 监控的海豚项目列表（逗号分隔环境变量可覆盖）
-DS_PROJECTS = os.environ.get("DS_PROJECTS", "lion_dw_dws,lion_dw_dwd").split(",")
+DS_PROJECTS = os.environ.get("DS_PROJECTS", "lion_dw_ods,lion_dw_dws,lion_dw_dwd").split(",")
 
 # 自动刷新间隔（秒）
 DASHBOARD_REFRESH = int(os.environ.get("DASHBOARD_REFRESH", "30"))
