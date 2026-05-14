@@ -210,7 +210,7 @@ body { font-family: -apple-system, 'PingFang SC', sans-serif; background: #0d111
   <!-- YARN 任务列表 -->
   <div class="panel" id="panel-yarn">
     <div class="panel-header">
-      <span class="panel-title">⚡ YARN 运行中任务</span>
+      <span class="panel-title">⚡ YARN 今日任务</span>
       <span class="panel-count" id="yarn-count">-</span>
     </div>
     <div class="filter-bar">
@@ -222,6 +222,13 @@ body { font-family: -apple-system, 'PingFang SC', sans-serif; background: #0d111
         <option value="">全部类型</option>
         <option value="SPARK">Spark</option>
         <option value="Apache Flink">Flink</option>
+      </select>
+      <select id="yarn-state" onchange="renderYarn()">
+        <option value="RUNNING" selected>运行中</option>
+        <option value="">全部状态</option>
+        <option value="FINISHED">已完成</option>
+        <option value="FAILED">失败</option>
+        <option value="KILLED">已杀</option>
       </select>
     </div>
     <div class="list-body" id="yarn-list"></div>
@@ -414,11 +421,13 @@ function renderYarn() {
   const search = document.getElementById("yarn-search").value.toLowerCase();
   const queue  = document.getElementById("yarn-queue").value;
   const type   = document.getElementById("yarn-type").value;
+  const state  = document.getElementById("yarn-state").value;
 
   let filtered = yarnApps.filter(a => {
     if (search && !a.name.toLowerCase().includes(search) && !a.id.includes(search)) return false;
     if (queue && a.queue !== queue) return false;
     if (type && a.applicationType !== type) return false;
+    if (state && a.state !== state) return false;
     return true;
   });
 

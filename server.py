@@ -103,9 +103,15 @@ def fetch_yarn_metrics():
         return {"error": str(e)}
 
 
-def fetch_yarn_apps_running():
-    """获取 YARN 运行中的应用列表"""
-    url = f"{RM_BASE}/ws/v1/cluster/apps?states=RUNNING"
+def fetch_yarn_apps_today():
+    """获取 YARN 今日应用列表（运行中 + 已完成/失败）"""
+    import calendar
+    now = datetime.now()
+    today_start_ms = int(calendar.timegm(now.replace(hour=0, minute=0, second=0, microsecond=0).timetuple()) * 1000)
+    # 查询今日启动的所有任务（不限状态）
+    url = (f"{RM_BASE}/ws/v1/cluster/apps"
+           f"?startedTimeBegin={today_start_ms}"
+           f"&states=RUNNING,FINISHED,FAILED,KILLED,SUBMITTED,ACCEPTED")
     try:
         req = Request(url, headers={"Accept": "application/json"})
         with urlopen(req, timeout=15) as resp:
@@ -170,11 +176,15 @@ def _ds_headers():
     }
 
 
-def fetch_ds_instances(project_name, page_size=20, state_type=""):
-    """获取海豚调度工作流实例列表"""
+def fetch_ds_instances(project_name, page_size=50, state_type=""):
+    """获取海豚调度今日工作流实例列表"""
+    # 今日时间范围（服务器本地时间）
+    today = datetime.now().strftime("%Y-%m-%d")
+    start_date = today + " 00:00:00"
+    end_date = today + " 23:59:59"
     url = (f"{DS_BASE}/dolphinscheduler/projects/{project_name}/instance/list-paging"
            f"?pageSize={page_size}&pageNo=1&searchVal=&stateType={state_type}"
-           f"&startDate=&endDate=&executorName=")
+           f"&startDate={start_date}&endDate={end_date}&executorName=")
     try:
         req = Request(url, headers=_ds_headers())
         with urlopen(req, timeout=10) as resp:
@@ -209,7 +219,7 @@ def _refresh_dashboard():
     while True:
         try:
             metrics = fetch_yarn_metrics()
-            apps = fetch_yarn_apps_running()
+            apps = fetch_yarn_apps_today()
 
             ds_instances = []
             for proj in DS_PROJECTS:
